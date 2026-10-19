@@ -1,0 +1,7 @@
+node_modules/
+build/
+.env
+.session.json
+*.log
+.DS_Store
+.claude/
