@@ -1,5 +1,5 @@
 {
-  "name": "docmost-mcp",
+  "name": "@punyamsingh/docmost-mcp",
   "version": "0.1.0",
   "description": "MCP server for self-hosted Docmost: read, search, create and update pages in Markdown",
   "type": "module",
@@ -26,6 +26,17 @@
   ],
   "author": "Punyam Singh",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/punyamsingh/docmost-mcp.git"
+  },
+  "homepage": "https://github.com/punyamsingh/docmost-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/punyamsingh/docmost-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20.12.0"
   },

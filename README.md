@@ -27,23 +27,16 @@ Content updates go through Docmost's real-time collaboration layer, so if someon
 
 ## Setup
 
-```bash
-git clone https://github.com/punyamsingh/docmost-mcp.git
-cd docmost-mcp
-npm install          # also builds into build/
-cp .env.example .env # then fill in DOCMOST_URL, DOCMOST_EMAIL, DOCMOST_PASSWORD
-```
-
-`.env` is git-ignored. You can pass the same three variables through your MCP client's `env` block instead; values set there take precedence over `.env`.
-
-After the first login the session token is cached in `.session.json` (git-ignored, file mode `600`), so restarting the client does not open a new Docmost session every time. A new login happens automatically when the token expires or is revoked.
-
-## Register it
+There is nothing to clone. Register the server with your MCP client and pass your Docmost login as environment variables. `npx` downloads and runs it.
 
 ### Claude Code: all projects
 
 ```bash
-claude mcp add docmost --scope user -- node /absolute/path/to/docmost-mcp/build/index.js
+claude mcp add docmost --scope user \
+  -e DOCMOST_URL=https://docs.example.com \
+  -e DOCMOST_EMAIL=you@example.com \
+  -e DOCMOST_PASSWORD='your-password' \
+  -- npx -y @punyamsingh/docmost-mcp
 ```
 
 ### Claude Desktop, Cursor and other clients
@@ -54,12 +47,35 @@ Add the following to the client's MCP config (`claude_desktop_config.json`, `~/.
 {
   "mcpServers": {
     "docmost": {
-      "command": "node",
-      "args": ["/absolute/path/to/docmost-mcp/build/index.js"]
+      "command": "npx",
+      "args": ["-y", "@punyamsingh/docmost-mcp"],
+      "env": {
+        "DOCMOST_URL": "https://docs.example.com",
+        "DOCMOST_EMAIL": "you@example.com",
+        "DOCMOST_PASSWORD": "your-password"
+      }
     }
   }
 }
 ```
+
+To run the latest code on GitHub instead of the npm release, replace `@punyamsingh/docmost-mcp` with `github:punyamsingh/docmost-mcp`. The first start is slower because it builds from source.
+
+The client stores these values in its own config file in plain text, the same as a `.env` file would, so use a config file only you can read.
+
+After the first login the session token is cached in `~/.cache/docmost-mcp/` (or `$XDG_CACHE_HOME/docmost-mcp/`), with file mode `600`. Restarting the client therefore does not open a new Docmost session each time. A new login happens automatically when the token expires or is revoked.
+
+### From a clone
+
+```bash
+git clone https://github.com/punyamsingh/docmost-mcp.git
+cd docmost-mcp
+npm install          # also builds into build/
+cp .env.example .env # then fill in DOCMOST_URL, DOCMOST_EMAIL, DOCMOST_PASSWORD
+claude mcp add docmost --scope user -- node "$PWD/build/index.js"
+```
+
+`.env` is git-ignored. Variables set in the client's config take precedence over it.
 
 ## Limitations
 

@@ -1,4 +1,5 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { z } from 'zod';
 import type { DocmostConfig } from './config.js';
 
@@ -210,11 +211,13 @@ export const createDocmostClient = (config: DocmostConfig) => {
       );
     }
 
-    await writeFile(
-      config.sessionFile,
-      JSON.stringify({ baseUrl: config.baseUrl, email: config.email, token }),
-      { mode: 0o600 },
-    ).catch(() => undefined);
+    await mkdir(dirname(config.sessionFile), { recursive: true, mode: 0o700 })
+      .then(() =>
+        writeFile(config.sessionFile, JSON.stringify({ baseUrl: config.baseUrl, email: config.email, token }), {
+          mode: 0o600,
+        }),
+      )
+      .catch(() => undefined);
     return token;
   };
 
