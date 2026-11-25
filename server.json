@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.punyamsingh/docmost-mcp",
   "title": "Docmost (self-hosted)",
-  "description": "Read, search, create and edit self-hosted Docmost wiki pages in Markdown. No Enterprise API key.",
+  "description": "Read, search, edit and comment on self-hosted Docmost pages in Markdown. No Enterprise API key.",
   "repository": {
     "url": "https://github.com/punyamsingh/docmost-mcp",
     "source": "github"
