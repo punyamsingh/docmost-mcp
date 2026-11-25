@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -123,6 +124,24 @@ const editorPageSchema = z.object({
 });
 
 type EditorPage = z.infer<typeof editorPageSchema>;
+
+const memberSchema = z.object({ id: z.string(), name: z.string().nullish() });
+
+const commentSchema = z.object({
+  id: z.string(),
+  pageId: z.string(),
+  parentCommentId: z.string().nullish(),
+  content: z.unknown(),
+  selection: z.string().nullish(),
+  type: z.string().nullish(),
+  creator: memberSchema.nullish(),
+  resolvedAt: z.string().nullish(),
+  createdAt: z.string(),
+});
+
+type DocmostComment = z.infer<typeof commentSchema>;
+
+const suggestSchema = z.looseObject({ users: z.array(memberSchema).optional() });
 
 const LIVE_SYNC_TIMEOUT_MS = 10_000;
 const LIVE_CONFIRM_TIMEOUT_MS = 5_000;
@@ -389,6 +408,116 @@ export const editInPlace = (document: EditorNode, oldText: string, newText: stri
   return { content: editedDocument, replacements: plan.replacements };
 };
 
+const MENTION_PATTERN = /@\[([^\]\n]+)\]/g;
+
+const normalizeName = (name: string): string => name.trim().replace(/\s+/g, ' ').toLowerCase();
+
+const parseCommentContent = (content: unknown): EditorNode | undefined => {
+  let value = content;
+  if (typeof content === 'string') {
+    try {
+      value = JSON.parse(content);
+    } catch {
+      return undefined;
+    }
+  }
+  const parsed = editorNodeSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+};
+
+const inlineCommentText = (node: EditorNode): string => {
+  if (node.type === 'text' || node.type === 'mention') {
+    return inlineText(node, true);
+  }
+  return node.type === 'hardBreak' ? '\n' : (node.content ?? []).map(inlineCommentText).join('');
+};
+
+export const commentText = (content: unknown): string =>
+  (parseCommentContent(content)?.content ?? []).map(inlineCommentText).join('\n\n');
+
+type Member = { id: string; name: string };
+
+const commentLine = (line: string, members: Map<string, Member>): EditorNode[] => {
+  const nodes: EditorNode[] = [];
+  let consumed = 0;
+  for (const match of line.matchAll(MENTION_PATTERN)) {
+    const member = members.get(normalizeName(match[1] ?? ''));
+    if (member === undefined) {
+      continue;
+    }
+    if (match.index > consumed) {
+      nodes.push({ type: 'text', text: line.slice(consumed, match.index) });
+    }
+    nodes.push({ type: 'mention', attrs: { id: randomUUID(), label: member.name, entityType: 'user', entityId: member.id } });
+    consumed = match.index + match[0].length;
+  }
+  if (consumed < line.length) {
+    nodes.push({ type: 'text', text: line.slice(consumed) });
+  }
+  return nodes;
+};
+
+export const commentContent = (text: string, members: Map<string, Member>): EditorNode => ({
+  type: 'doc',
+  content: text
+    .replaceAll('\r\n', '\n')
+    .split(/\n{2,}/)
+    .filter((block) => block.trim() !== '')
+    .map((block) => ({
+      type: 'paragraph',
+      content: block
+        .split('\n')
+        .flatMap((line, index) => [...(index > 0 ? [{ type: 'hardBreak' }] : []), ...commentLine(line, members)]),
+    })),
+});
+
+const hasMarkInRange = (block: EditorNode, start: number, end: number, markType: string): boolean => {
+  let offset = 0;
+  return (block.content ?? []).some((child) => {
+    const childStart = offset;
+    offset += inlineText(child, false).length;
+    return offset > start && childStart < end && (child.marks ?? []).some((mark) => mark.type === markType);
+  });
+};
+
+const commentIdSchema = z.looseObject({ commentId: z.string() });
+
+const hasCommentMark = (node: EditorNode, commentId: string): boolean =>
+  (node.marks ?? []).some((mark) => mark.type === 'comment' && commentIdSchema.safeParse(mark.attrs).data?.commentId === commentId) ||
+  (node.content ?? []).some((child) => hasCommentMark(child, commentId));
+
+const hasStaleMark = (node: EditorNode, isStale: (attrs: Record<string, unknown>) => boolean): boolean =>
+  (node.marks ?? []).some((mark) => mark.type === 'comment' && isStale(z.record(z.string(), z.unknown()).catch({}).parse(mark.attrs))) ||
+  (node.content ?? []).some((child) => hasStaleMark(child, isStale));
+
+export type QuoteMatch = { block: EditorNode; start: number; end: number; text: string };
+
+export const findQuote = (document: EditorNode, quote: string): QuoteMatch => {
+  const plan = planInPlaceEdit(document, quote.replaceAll('\r\n', '\n'), '', false);
+  if ('ambiguousMatches' in plan) {
+    throw new DocmostError(`Refused: the quote appears ${plan.ambiguousMatches} times; include more surrounding text. Nothing was posted.`);
+  }
+  if ('reason' in plan) {
+    throw new DocmostError(`Refused: ${plan.reason.replace('oldText', 'the quote')}. Nothing was posted.`);
+  }
+  const [match] = plan.matches;
+  const start = match?.starts[0];
+  if (match === undefined || start === undefined) {
+    throw new DocmostError('Refused: the quote was not found. Nothing was posted.');
+  }
+  if (match.block.type === 'codeBlock') {
+    throw new DocmostError('Refused: the quote is inside a code block, which cannot hold comments. Nothing was posted.');
+  }
+  const end = start + match.length;
+  if (hasMarkInRange(match.block, start, end, 'comment')) {
+    throw new DocmostError(
+      'Refused: the quoted text already has a comment, and Docmost keeps one comment per stretch of text; reply to that comment instead. Nothing was posted.',
+    );
+  }
+  const blockText = (match.block.content ?? []).map((child) => inlineText(child, false)).join('');
+  return { block: match.block, start, end, text: blockText.slice(start, end) };
+};
+
 export type DocmostSpace = z.infer<typeof spaceSchema>;
 export type DocmostTreePage = z.infer<typeof treePageSchema>;
 export type DocmostSearchResult = z.infer<typeof searchResultSchema>;
@@ -428,7 +557,26 @@ export type EditPageInput = {
   replaceAll: boolean;
 };
 
-export class DocmostError extends Error {}
+export type AddCommentInput = {
+  pageId: string;
+  text: string;
+  quote?: string;
+};
+
+export type AddCommentResult = {
+  comment: DocmostComment;
+  anchored?: boolean;
+  anchorMissing?: string;
+};
+
+export class DocmostError extends Error {
+  status: number | undefined;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 const readErrorMessage = async (response: Response): Promise<string> => {
   const rawBody = await response.text();
@@ -574,7 +722,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
       response = await send(await freshToken);
     }
     if (!response.ok) {
-      throw new DocmostError(`Docmost ${endpoint} failed (${response.status}): ${await readErrorMessage(response)}`);
+      throw new DocmostError(`Docmost ${endpoint} failed (${response.status}): ${await readErrorMessage(response)}`, response.status);
     }
 
     const envelope = z.object({ data: z.unknown() }).safeParse(await response.json().catch(() => undefined));
@@ -647,7 +795,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
     );
   };
 
-  const openLive = async (pageId: string): Promise<{ live: LiveDocument } | { skipped: string }> => {
+  const openLive = async (pageId: string, readOnly = false): Promise<{ live: LiveDocument } | { skipped: string }> => {
     let token: string;
     try {
       token = (await post('/auth/collab-token', {}, z.object({ token: z.string() }))).token;
@@ -655,7 +803,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
       return { skipped: `no live-editing token: ${error instanceof Error ? error.message : String(error)}` };
     }
     try {
-      return { live: await openLiveDocument({ url: config.collabUrl, pageId, token, timeoutMs: LIVE_SYNC_TIMEOUT_MS }) };
+      return {
+        live: await openLiveDocument({ url: config.collabUrl, pageId, token, timeoutMs: LIVE_SYNC_TIMEOUT_MS, readOnly }),
+      };
     } catch (error) {
       if (error instanceof LiveUnavailableError) {
         return { skipped: error.message };
@@ -826,7 +976,219 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return { page, replacements, editedInPlace: false };
   };
 
-  return { pageUrl, listSpaces, listChildPages, searchPages, getPage, createPage, updatePage, editPage };
+  const findMembers = async (text: string): Promise<Map<string, Member>> => {
+    const names = [...new Set([...text.matchAll(MENTION_PATTERN)].map((match) => (match[1] ?? '').trim()))];
+    const members = new Map<string, Member>();
+    for (const name of names) {
+      const { users = [] } = await post('/search/suggest', { query: name, includeUsers: true }, suggestSchema);
+      const exactMatches = users.filter((user) => normalizeName(user.name ?? '') === normalizeName(name));
+      const [member] = exactMatches;
+      if (exactMatches.length !== 1 || member === undefined) {
+        const closest = users.flatMap((user) => (user.name ? [user.name] : [])).slice(0, 5);
+        throw new DocmostError(
+          exactMatches.length === 0
+            ? `Refused: no member is named "${name}"${closest.length > 0 ? `; closest: ${closest.join(', ')}` : ''}. Nothing was posted.`
+            : `Refused: ${exactMatches.length} members are named "${name}", so the mention is ambiguous. Nothing was posted.`,
+        );
+      }
+      members.set(normalizeName(name), { id: member.id, name: member.name ?? name });
+    }
+    return members;
+  };
+
+  const buildCommentContent = async (text: string): Promise<string> => {
+    const content = commentContent(text, await findMembers(text));
+    if ((content.content ?? []).length === 0) {
+      throw new DocmostError('Refused: the comment text is empty. Nothing was posted.');
+    }
+    return JSON.stringify(content);
+  };
+
+  const commentInfo = (commentId: string) => post('/comments/info', { commentId }, commentSchema);
+
+  const summarizeComment = (comment: DocmostComment) => ({
+    id: comment.id,
+    author: comment.creator?.name ?? null,
+    createdAt: comment.createdAt,
+    text: commentText(comment.content),
+  });
+
+  const listComments = async (pageReference: string, includeResolved: boolean) => {
+    const comments = await collectAllPages('/comments', { pageId: await resolvePageId(pageReference) }, commentSchema);
+    const byTime = (first: DocmostComment, second: DocmostComment) => Date.parse(first.createdAt) - Date.parse(second.createdAt);
+    return comments
+      .filter((comment) => !comment.parentCommentId && (includeResolved || !comment.resolvedAt))
+      .sort(byTime)
+      .map((thread) => ({
+        ...summarizeComment(thread),
+        quote: thread.selection ?? null,
+        resolved: Boolean(thread.resolvedAt),
+        replies: comments
+          .filter((comment) => comment.parentCommentId === thread.id)
+          .sort(byTime)
+          .map(summarizeComment),
+      }));
+  };
+
+  const addComment = async (input: AddCommentInput): Promise<AddCommentResult> => {
+    const pageId = await resolvePageId(input.pageId);
+    const content = await buildCommentContent(input.text);
+    if (input.quote === undefined) {
+      return { comment: await post('/comments/create', { pageId, content, type: 'page' }, commentSchema) };
+    }
+    const attempt = await openLive(pageId, true);
+    if ('skipped' in attempt) {
+      throw new DocmostError(`Refused: the quote can't be anchored because ${attempt.skipped}. Nothing was posted.`);
+    }
+    const { live } = attempt;
+    try {
+      const quote = findQuote(live.document, input.quote);
+      const comment = await post(
+        '/comments/create',
+        { pageId, content, type: 'inline', selection: quote.text, yjsSelection: live.selection(quote.block, quote.start, quote.end) },
+        commentSchema,
+      );
+      const anchored = await live.waitFor((document) => hasCommentMark(document, comment.id), LIVE_CONFIRM_TIMEOUT_MS);
+      return anchored
+        ? { comment, anchored }
+        : {
+            comment,
+            anchored,
+            anchorMissing: `Docmost saved the comment but did not add its highlight within ${LIVE_CONFIRM_TIMEOUT_MS / 1000} s`,
+          };
+    } finally {
+      live.close();
+    }
+  };
+
+  const replyToComment = async (commentId: string, text: string) => {
+    const target = await commentInfo(commentId);
+    const content = await buildCommentContent(text);
+    const threadId = target.parentCommentId ?? target.id;
+    const reply = await post('/comments/create', { pageId: target.pageId, content, parentCommentId: threadId }, commentSchema);
+    return { reply, threadId, postedToThread: Boolean(target.parentCommentId) };
+  };
+
+  const editComment = async (commentId: string, text: string) => {
+    const target = await commentInfo(commentId);
+    const content = await buildCommentContent(text);
+    await post('/comments/update', { commentId: target.id, content }, z.unknown());
+    return { id: target.id, threadId: target.parentCommentId ?? target.id };
+  };
+
+  const removeCommentHighlight = async (comment: DocmostComment): Promise<{ highlightRemoved: boolean; highlightLeft?: string }> => {
+    let attempt: Awaited<ReturnType<typeof openLive>>;
+    try {
+      attempt = await openLive(comment.pageId);
+    } catch (error) {
+      return { highlightRemoved: false, highlightLeft: error instanceof Error ? error.message : String(error) };
+    }
+    if ('skipped' in attempt) {
+      return { highlightRemoved: false, highlightLeft: attempt.skipped };
+    }
+    const { live } = attempt;
+    try {
+      live.updateMarks('comment', (attrs) => attrs.commentId === comment.id, () => null);
+      await live.confirm(LIVE_CONFIRM_TIMEOUT_MS);
+      return { highlightRemoved: true };
+    } catch (error) {
+      return { highlightRemoved: false, highlightLeft: error instanceof Error ? error.message : String(error) };
+    } finally {
+      live.close();
+    }
+  };
+
+  const deleteComment = async (commentId: string, deleteReplies: boolean) => {
+    const target = await commentInfo(commentId);
+    const replies = target.parentCommentId
+      ? []
+      : (await collectAllPages('/comments', { pageId: target.pageId }, commentSchema)).filter(
+          (comment) => comment.parentCommentId === target.id,
+        );
+    if (replies.length > 0 && !deleteReplies) {
+      throw new DocmostError(
+        `Refused: this comment has ${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}, which Docmost deletes with it permanently; pass deleteReplies: true to delete the whole thread. Nothing was deleted.`,
+      );
+    }
+    await post('/comments/delete', { commentId: target.id }, z.unknown());
+    const deleted = [target.id, ...replies.map((reply) => reply.id)];
+    return target.type === 'inline' ? { deleted, ...(await removeCommentHighlight(target)) } : { deleted };
+  };
+
+  const resolveComment = async (commentId: string, resolved: boolean) => {
+    const target = await commentInfo(commentId);
+    if (target.parentCommentId) {
+      throw new DocmostError(
+        `Refused: ${target.id} is a reply, and Docmost resolves whole threads; resolve the thread's top comment ${target.parentCommentId} instead. Nothing changed.`,
+      );
+    }
+    try {
+      await post('/comments/resolve', { commentId: target.id, pageId: target.pageId, resolved }, z.unknown());
+    } catch (error) {
+      if (error instanceof DocmostError && error.status === 403 && /licen[cs]e/i.test(error.message)) {
+        throw new DocmostError(
+          `Refused: resolving comment threads needs a Docmost Enterprise licence on this instance, so the thread stays ${resolved ? 'open' : 'resolved'}. Nothing changed.`,
+        );
+      }
+      throw error;
+    }
+    return target.type === 'inline'
+      ? { id: target.id, resolved, ...(await syncHighlightResolved(target, resolved)) }
+      : { id: target.id, resolved };
+  };
+
+  // Docmost 0.95 leaves the highlight's resolved flag to its editor; newer releases set it on the server.
+  const syncHighlightResolved = async (
+    comment: DocmostComment,
+    resolved: boolean,
+  ): Promise<{ highlightUpdated?: boolean; highlightLeft?: string }> => {
+    let attempt: Awaited<ReturnType<typeof openLive>>;
+    try {
+      attempt = await openLive(comment.pageId, true);
+    } catch (error) {
+      return { highlightUpdated: false, highlightLeft: error instanceof Error ? error.message : String(error) };
+    }
+    if ('skipped' in attempt) {
+      return { highlightUpdated: false, highlightLeft: attempt.skipped };
+    }
+    const { live } = attempt;
+    try {
+      if (!hasCommentMark(live.document, comment.id)) {
+        return {};
+      }
+      const isStale = (attrs: Record<string, unknown>) => attrs.commentId === comment.id && attrs.resolved !== resolved;
+      if (!hasStaleMark(live.document, isStale)) {
+        return { highlightUpdated: true };
+      }
+      if (!live.canEdit) {
+        return { highlightUpdated: false, highlightLeft: 'this account can only view the page, so it cannot update the highlight' };
+      }
+      live.updateMarks('comment', isStale, (attrs) => ({ ...attrs, resolved }));
+      await live.confirm(LIVE_CONFIRM_TIMEOUT_MS);
+      return { highlightUpdated: true };
+    } catch (error) {
+      return { highlightUpdated: false, highlightLeft: error instanceof Error ? error.message : String(error) };
+    } finally {
+      live.close();
+    }
+  };
+
+  return {
+    pageUrl,
+    listSpaces,
+    listChildPages,
+    searchPages,
+    getPage,
+    createPage,
+    updatePage,
+    editPage,
+    listComments,
+    addComment,
+    replyToComment,
+    editComment,
+    deleteComment,
+    resolveComment,
+  };
 };
 
 export type DocmostClient = ReturnType<typeof createDocmostClient>;
