@@ -10,7 +10,15 @@ import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 import { z } from 'zod';
-import { EMAIL, PASSWORD, startFakeDocmost, type FakeDocmost, type FakePage } from './fake-docmost.ts';
+import {
+  EMAIL,
+  PASSWORD,
+  startFakeDocmost,
+  type FakeComment,
+  type FakeDocmost,
+  type FakeMember,
+  type FakePage,
+} from './fake-docmost.ts';
 
 const SERVER_ENTRY = fileURLToPath(new URL('../build/index.js', import.meta.url));
 
@@ -43,8 +51,12 @@ export const startServer = async (
   return { client, call, cacheHome, close: () => client.close() };
 };
 
-export const startHarness = async (t: TestContext, pages: FakePage[], options: { collabUrl?: string } = {}) => {
-  const docmost = await startFakeDocmost(pages);
+export const startHarness = async (
+  t: TestContext,
+  pages: FakePage[],
+  options: { collabUrl?: string; comments?: FakeComment[]; members?: FakeMember[] } = {},
+) => {
+  const docmost = await startFakeDocmost(pages, { comments: options.comments, members: options.members });
   const server = await startServer(docmost.url, { collabUrl: options.collabUrl?.replace('{docmost}', docmost.url) });
   t.after(async () => {
     await server.close();

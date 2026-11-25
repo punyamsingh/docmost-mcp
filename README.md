@@ -36,6 +36,12 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
 | `edit_page` | Replaces an exact piece of text in a page, in place when it is plain text, leaving the rest of the page as it is |
+| `list_comments` | Lists a page's open comment threads with their replies, or every thread with `includeResolved` |
+| `add_comment` | Posts a page comment, or an inline comment attached to a `quote` copied from `get_page` |
+| `reply_to_comment` | Replies in a comment's thread |
+| `edit_comment` | Replaces the text of one of the account's own comments |
+| `delete_comment` | Permanently deletes a comment and removes its highlight; a whole thread needs `deleteReplies` |
+| `resolve_comment` | Resolves or reopens a thread, on Docmost instances licensed for it |
 
 Every tool that takes a page accepts a page id, a slug id, or the page URL copied from the browser.
 
@@ -46,6 +52,14 @@ When `oldText` and `newText` are plain text and each match sits inside one parag
 Otherwise, for example when the new text has Markdown formatting or the match crosses a line break or a mention, the edit rewrites the whole body from Markdown, as an `update_page` replace does. Content that Markdown cannot carry would be deleted, so the server refuses such a rewrite on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
 
 A whole-body rewrite can't be merged, so it is refused while someone with the page open has typing that Docmost hasn't saved yet; retry a minute later. Append and prepend are merged by Docmost, so they always go through.
+
+### Comments
+
+Comment text is plain text: blank lines start new paragraphs, and `@[Full Name]` mentions the one member with that name, which notifies them. A name that matches no member, or several, refuses the call before anything is posted.
+
+An inline comment's `quote` must appear exactly once inside one paragraph or heading, without crossing a mention or sitting in a code block or on text that already has a comment. The server finds it in the page's live document and sends its position with the comment, and Docmost adds the highlight, as it does in its own editor. The server then waits up to 5 seconds for the highlight; if it doesn't appear, the comment still exists and the result says `anchored: false`.
+
+Docmost threads are one level deep, so a reply to a reply is posted in the same thread, and only a thread's top comment can be resolved. Resolving is a Docmost Enterprise feature in some releases; without the licence the call is refused and nothing changes. Docmost 0.95 leaves an inline thread's highlight looking open after a resolve, so the server updates it through the live document; `highlightUpdated` says whether it could. Deletes are permanent and take a comment's replies with them, so deleting a thread's top comment needs `deleteReplies: true`. Docmost's API leaves a deleted comment's highlight on the page, so the server removes it through the live document; if it can't, for an account that can only comment, the result says `highlightRemoved: false`.
 
 ## Requirements
 
@@ -133,7 +147,9 @@ The server reaches Docmost's collaboration websocket at `DOCMOST_URL` + `/collab
 ## Limitations
 
 - Uploading local image files is not supported yet; reference images that are already hosted somewhere by URL.
-- No tools for deleting or moving pages, comments, or permissions.
+- No tools for deleting or moving pages, or for permissions.
+- Mentions are looked up through Docmost's people search, 100 people at a time; when 100 or more people match a name, uniqueness can't be confirmed and the mention is refused.
+- `delete_comment` checks a thread for replies just before deleting it. A reply posted in the moment between that check and the delete is deleted with the thread, because Docmost's delete can't be made conditional.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
 - When the collaboration websocket can't be reached, `edit_page` falls back to writing the saved page. Docmost saves what people type 10 to 45 seconds after they type it, so in that case text typed in that window by someone with the page open can be lost.
 - Before a whole-body rewrite the server compares the live text with the saved text, not formatting, so bold or colour added in the last 45 seconds without typing can still be lost by a rewrite.

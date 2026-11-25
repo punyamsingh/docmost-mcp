@@ -24,6 +24,21 @@ export type FakePage = {
   textPieces?: 'run' | 'node';
 };
 
+export type FakeMember = { id: string; name: string };
+
+export type FakeComment = {
+  id: string;
+  pageId: string;
+  parentCommentId: string | null;
+  content: unknown;
+  selection: string | null;
+  type: string;
+  creatorId: string;
+  resolvedAt: string | null;
+  createdAt: string;
+  editedAt: string | null;
+};
+
 export type FakeRequest = { endpoint: string; body: Record<string, unknown> };
 
 export type CollabMode = 'normal' | 'notFound' | 'neverSync' | 'rejectToken' | 'readOnly' | 'neverConfirm';
@@ -32,6 +47,7 @@ export const EMAIL = 'tester@example.test';
 export const PASSWORD = 'correct-password';
 export const SPACE_ID = 'space-1';
 export const START_TIME = '2026-11-25T10:00:00.000Z';
+export const ACCOUNT: FakeMember = { id: 'user-1', name: 'Test Account' };
 
 const paragraphsFrom = (markdown: string): EditorNode[] =>
   markdown
@@ -58,8 +74,63 @@ export const makePage = (fields: Partial<FakePage> & { id: string }): FakePage =
   ...fields,
 });
 
+export const commentBody = (...paragraphs: string[]) => ({
+  type: 'doc',
+  content: paragraphs.map((value) => ({ type: 'paragraph', content: [{ type: 'text', text: value }] })),
+});
+
+export const makeComment = (fields: Partial<FakeComment> & { id: string; pageId: string }): FakeComment => ({
+  parentCommentId: null,
+  content: commentBody(`Comment ${fields.id}`),
+  selection: null,
+  type: 'page',
+  creatorId: ACCOUNT.id,
+  resolvedAt: null,
+  createdAt: START_TIME,
+  editedAt: null,
+  ...fields,
+});
+
+export const commentMark = (commentId: string, resolved = false): EditorMark => ({
+  type: 'comment',
+  attrs: { commentId, resolved },
+});
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isYjsId = (value: unknown): boolean =>
+  isRecord(value) && Number.isInteger(value.client) && Number.isInteger(value.clock);
+
+// Docmost's yjsSelectionSchema: all four fields are required, so a short position leaves the comment unanchored.
+const isYjsPosition = (value: unknown): boolean =>
+  isRecord(value) &&
+  isYjsId(value.type) &&
+  'tname' in value &&
+  (value.tname === null || typeof value.tname === 'string') &&
+  'item' in value &&
+  (value.item === null || isYjsId(value.item)) &&
+  Number.isInteger(value.assoc);
+
+const allTexts = (parent: Y.XmlFragment | Y.XmlElement): Y.XmlText[] =>
+  parent
+    .toArray()
+    .flatMap((child) => (child instanceof Y.XmlText ? [child] : child instanceof Y.XmlElement ? allTexts(child) : []));
+
+const updateCommentMarks = (fragment: Y.XmlFragment, commentId: string, resolved: boolean) => {
+  for (const run of allTexts(fragment)) {
+    const delta: unknown = run.toDelta();
+    let position = 0;
+    for (const operation of Array.isArray(delta) ? delta : []) {
+      const length = isRecord(operation) && typeof operation.insert === 'string' ? operation.insert.length : 1;
+      const mark = isRecord(operation) && isRecord(operation.attributes) ? operation.attributes.comment : undefined;
+      if (isRecord(mark) && mark.commentId === commentId) {
+        run.format(position, length, { comment: { ...mark, resolved } });
+      }
+      position += length;
+    }
+  }
+};
 
 const isEditorNode = (value: unknown): value is EditorNode => isRecord(value) && typeof value.type === 'string';
 
@@ -148,8 +219,16 @@ const readBody = (request: IncomingMessage) =>
     });
   });
 
-export const startFakeDocmost = async (initialPages: FakePage[]) => {
+export const startFakeDocmost = async (
+  initialPages: FakePage[],
+  options: { comments?: FakeComment[]; members?: FakeMember[] } = {},
+) => {
   const pages = initialPages.map((page) => structuredClone(page));
+  const comments = (options.comments ?? []).map((comment) => structuredClone(comment));
+  const members = [ACCOUNT, ...(options.members ?? [])];
+  let commentMarks: 'apply' | 'drop' = 'apply';
+  let spaceAdmin = false;
+  let resolveMode: 'updatesHighlight' | 'leavesHighlight' | 'unlicensed' = 'updatesHighlight';
   const requests: FakeRequest[] = [];
   const validTokens = new Set<string>();
   const collabTokens = new Set<string>();
@@ -301,6 +380,114 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
     response.end(JSON.stringify(body));
   };
 
+  const commentView = (comment: FakeComment) => ({
+    ...comment,
+    creator: members.find((member) => member.id === comment.creatorId) ?? null,
+  });
+
+  const setCommentMark = (page: FakePage, selection: unknown, commentId: string) => {
+    if (!isRecord(selection) || !isYjsPosition(selection.anchor) || !isYjsPosition(selection.head)) {
+      return;
+    }
+    withLiveDocument(page, (fragment) => {
+      const ydoc = fragment.doc;
+      if (ydoc === null) {
+        return;
+      }
+      const [anchor, head] = [selection.anchor, selection.head].map((position) =>
+        Y.createAbsolutePositionFromRelativePosition(Y.createRelativePositionFromJSON(position), ydoc),
+      );
+      if (anchor && head && anchor.type === head.type && anchor.type instanceof Y.XmlText) {
+        const from = Math.min(anchor.index, head.index);
+        anchor.type.format(from, Math.abs(head.index - anchor.index), { comment: { commentId, resolved: false } });
+      }
+    });
+  };
+
+  const handleComment = (endpoint: string, body: Record<string, unknown>, response: ServerResponse) => {
+    const comment = comments.find((candidate) => candidate.id === body.commentId);
+    if (comment === undefined) {
+      send(response, 404, { message: 'Comment not found' });
+      return;
+    }
+    if (endpoint === '/comments/info') {
+      send(response, 200, { data: commentView(comment) });
+      return;
+    }
+    if (endpoint === '/comments/update') {
+      if (comment.creatorId !== ACCOUNT.id) {
+        send(response, 403, { message: 'You can only edit your own comments' });
+        return;
+      }
+      comment.content = typeof body.content === 'string' ? JSON.parse(body.content) : body.content;
+      comment.editedAt = new Date(clock).toISOString();
+      send(response, 200, { data: commentView(comment) });
+      return;
+    }
+    if (endpoint === '/comments/delete') {
+      if (comment.creatorId !== ACCOUNT.id && !spaceAdmin) {
+        send(response, 403, { message: 'You can only delete your own comments' });
+        return;
+      }
+      const removed = new Set([comment.id, ...comments.filter((reply) => reply.parentCommentId === comment.id).map((reply) => reply.id)]);
+      comments.splice(0, comments.length, ...comments.filter((candidate) => !removed.has(candidate.id)));
+      send(response, 200, {});
+      return;
+    }
+    if (endpoint === '/comments/resolve') {
+      if (resolveMode === 'unlicensed') {
+        send(response, 403, { message: 'This feature requires a valid license.' });
+        return;
+      }
+      if (comment.parentCommentId !== null) {
+        send(response, 400, { message: 'Cannot resolve reply comments' });
+        return;
+      }
+      const resolved = body.resolved === true;
+      comment.resolvedAt = resolved ? new Date(clock).toISOString() : null;
+      const page = findPage(comment.pageId);
+      if (page && resolveMode === 'updatesHighlight') {
+        withLiveDocument(page, (fragment) => updateCommentMarks(fragment, comment.id, resolved));
+      }
+      send(response, 200, { data: commentView(comment) });
+      return;
+    }
+    send(response, 404, { message: `No fake for ${endpoint}` });
+  };
+
+  const createComment = (page: FakePage, body: Record<string, unknown>, response: ServerResponse) => {
+    if (typeof body.parentCommentId === 'string') {
+      const parent = comments.find((candidate) => candidate.id === body.parentCommentId);
+      if (parent === undefined || parent.pageId !== page.id) {
+        send(response, 400, { message: 'Parent comment not found' });
+        return;
+      }
+      if (parent.parentCommentId !== null) {
+        send(response, 400, { message: 'You cannot reply to a reply' });
+        return;
+      }
+    }
+    if (typeof body.content !== 'string') {
+      send(response, 400, { message: ['content must be a JSON string'] });
+      return;
+    }
+    clock += 1000;
+    const comment = makeComment({
+      id: `comment-${comments.length + 1}`,
+      pageId: page.id,
+      parentCommentId: typeof body.parentCommentId === 'string' ? body.parentCommentId : null,
+      content: JSON.parse(body.content),
+      selection: typeof body.selection === 'string' ? body.selection : null,
+      type: typeof body.type === 'string' ? body.type : 'page',
+      createdAt: new Date(clock).toISOString(),
+    });
+    comments.push(comment);
+    if (body.yjsSelection !== undefined && commentMarks === 'apply') {
+      setCommentMark(page, body.yjsSelection, comment.id);
+    }
+    send(response, 200, { data: commentView(comment) });
+  };
+
   const handle = (endpoint: string, body: Record<string, unknown>, token: string | undefined, response: ServerResponse) => {
     if (endpoint === '/auth/login') {
       loginCount += 1;
@@ -347,9 +534,36 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
       send(response, 200, { data: pageInfo(page, body.format) });
       return;
     }
+    if (endpoint === '/search/suggest') {
+      const query = typeof body.query === 'string' ? body.query.toLowerCase() : '';
+      const users = body.includeUsers === true ? members.filter((member) => member.name.toLowerCase().includes(query)) : [];
+      send(response, 200, { data: { users: users.slice(0, typeof body.limit === 'number' ? body.limit : 10), pages: [] } });
+      return;
+    }
+    if (endpoint.startsWith('/comments/') && endpoint !== '/comments/create') {
+      handleComment(endpoint, body, response);
+      return;
+    }
     const page = findPage(body.pageId);
     if (page === undefined) {
       send(response, 404, { message: 'Page not found' });
+      return;
+    }
+    if (endpoint === '/comments') {
+      const pageComments = comments.filter((comment) => comment.pageId === page.id);
+      const limit = typeof body.limit === 'number' ? body.limit : 20;
+      const start = typeof body.cursor === 'string' ? Number(body.cursor) : 0;
+      const hasNextPage = start + limit < pageComments.length;
+      send(response, 200, {
+        data: {
+          items: pageComments.slice(start, start + limit).map(commentView),
+          meta: { hasNextPage, nextCursor: hasNextPage ? String(start + limit) : null },
+        },
+      });
+      return;
+    }
+    if (endpoint === '/comments/create') {
+      createComment(page, body, response);
       return;
     }
     if (endpoint === '/pages/info') {
@@ -415,6 +629,18 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
       requestHooks.push(hook);
     },
     page: (reference: string) => findPage(reference),
+    comments: () => comments.map((comment) => structuredClone(comment)),
+    commentWrites: () =>
+      requests.filter((entry) => ['/comments/create', '/comments/update', '/comments/delete', '/comments/resolve'].includes(entry.endpoint)),
+    dropCommentMarks: () => {
+      commentMarks = 'drop';
+    },
+    makeSpaceAdmin: () => {
+      spaceAdmin = true;
+    },
+    setResolveMode: (mode: 'updatesHighlight' | 'leavesHighlight' | 'unlicensed') => {
+      resolveMode = mode;
+    },
     close: async () => {
       hanging.forEach((release) => release());
       server.hocuspocus.closeConnections();

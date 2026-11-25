@@ -6,9 +6,19 @@ export class LiveUnavailableError extends Error {}
 export class LiveRefusedError extends Error {}
 export class LiveUnconfirmedError extends Error {}
 
+export type YjsSelection = { anchor: unknown; head: unknown };
+
 export type LiveDocument = {
   document: EditorNode;
   replace: (block: EditorNode, start: number, end: number, newText: string) => void;
+  selection: (block: EditorNode, start: number, end: number) => YjsSelection;
+  waitFor: (test: (document: EditorNode) => boolean, timeoutMs: number) => Promise<boolean>;
+  updateMarks: (
+    type: string,
+    matches: (attrs: Record<string, unknown>) => boolean,
+    next: (attrs: Record<string, unknown>) => Record<string, unknown> | null,
+  ) => number;
+  canEdit: boolean;
   transact: (change: () => void) => void;
   confirm: (timeoutMs: number) => Promise<void>;
   close: () => void;
@@ -66,27 +76,114 @@ const attributesAt = (text: Y.XmlText, index: number): Record<string, unknown> =
   return {};
 };
 
-const createLiveDocument = (provider: HocuspocusProvider, ydoc: Y.Doc, destroy: () => void): LiveDocument => {
+const textPieces = (element: Y.XmlElement, start: number, end: number) => {
+  const pieces: { text: Y.XmlText; from: number; to: number }[] = [];
+  let offset = 0;
+  for (const child of element.toArray()) {
+    const length = child instanceof Y.XmlText ? child.length : 1;
+    if (child instanceof Y.XmlText && offset < end && offset + length > start) {
+      pieces.push({ text: child, from: Math.max(start, offset) - offset, to: Math.min(end, offset + length) - offset });
+    }
+    offset += length;
+  }
+  return pieces;
+};
+
+const allTexts = (parent: Y.XmlFragment | Y.XmlElement): Y.XmlText[] =>
+  parent
+    .toArray()
+    .flatMap((child) => (child instanceof Y.XmlText ? [child] : child instanceof Y.XmlElement ? allTexts(child) : []));
+
+// Docmost validates all four fields, which Y.relativePositionToJSON omits when empty.
+const positionOf = (text: Y.XmlText, index: number) => {
+  const position = Y.createRelativePositionFromTypeIndex(text, index);
+  return { type: position.type, tname: position.tname, item: position.item, assoc: position.assoc };
+};
+
+const readDocument = (fragment: Y.XmlFragment, blocks: Map<EditorNode, Y.XmlElement>): EditorNode => ({
+  type: 'doc',
+  content: fragment.toArray().flatMap((child) => (child instanceof Y.XmlElement ? [toEditorNode(child, blocks)] : [])),
+});
+
+const createLiveDocument = (
+  provider: HocuspocusProvider,
+  ydoc: Y.Doc,
+  destroy: () => void,
+  canEdit: boolean,
+): LiveDocument => {
   const blocks = new Map<EditorNode, Y.XmlElement>();
   const fragment = ydoc.getXmlFragment('default');
-  const content = fragment
-    .toArray()
-    .flatMap((child) => (child instanceof Y.XmlElement ? [toEditorNode(child, blocks)] : []));
+  const document = readDocument(fragment, blocks);
 
-  const replace = (block: EditorNode, start: number, end: number, newText: string) => {
+  const elementOf = (block: EditorNode) => {
     const element = blocks.get(block);
     if (element === undefined) {
       throw new LiveUnconfirmedError('The live document changed shape while editing; re-read the page.');
     }
-    const pieces: { text: Y.XmlText; from: number; to: number }[] = [];
-    let offset = 0;
-    for (const child of element.toArray()) {
-      const length = child instanceof Y.XmlText ? child.length : 1;
-      if (child instanceof Y.XmlText && offset < end && offset + length > start) {
-        pieces.push({ text: child, from: Math.max(start, offset) - offset, to: Math.min(end, offset + length) - offset });
-      }
-      offset += length;
+    return element;
+  };
+
+  const selection = (block: EditorNode, start: number, end: number): YjsSelection => {
+    const pieces = textPieces(elementOf(block), start, end);
+    const first = pieces[0];
+    const last = pieces.at(-1);
+    if (first === undefined || last === undefined) {
+      throw new LiveUnconfirmedError('The quoted text is no longer in the live document; re-read the page.');
     }
+    return { anchor: positionOf(first.text, first.from), head: positionOf(last.text, last.to) };
+  };
+
+  const waitFor = (test: (current: EditorNode) => boolean, timeoutMs: number) =>
+    new Promise<boolean>((resolve) => {
+      const check = () => test(readDocument(fragment, new Map()));
+      if (check()) {
+        resolve(true);
+        return;
+      }
+      const timer = setTimeout(() => {
+        ydoc.off('update', onUpdate);
+        resolve(false);
+      }, timeoutMs);
+      const onUpdate = () => {
+        if (check()) {
+          clearTimeout(timer);
+          ydoc.off('update', onUpdate);
+          resolve(true);
+        }
+      };
+      ydoc.on('update', onUpdate);
+    });
+
+  const updateMarks = (
+    type: string,
+    matches: (attrs: Record<string, unknown>) => boolean,
+    next: (attrs: Record<string, unknown>) => Record<string, unknown> | null,
+  ): number => {
+    let changed = 0;
+    ydoc.transact(() => {
+      for (const text of allTexts(fragment)) {
+        let position = 0;
+        const ranges: { from: number; length: number; name: string; attrs: Record<string, unknown> }[] = [];
+        for (const operation of deltaOf(text)) {
+          const length = typeof operation.insert === 'string' ? operation.insert.length : 1;
+          for (const [name, attrs] of Object.entries(operation.attributes ?? {})) {
+            if (markName(name) === type && isRecord(attrs) && matches(attrs)) {
+              ranges.push({ from: position, length, name, attrs });
+            }
+          }
+          position += length;
+        }
+        for (const range of ranges) {
+          text.format(range.from, range.length, { [range.name]: next(range.attrs) });
+        }
+        changed += ranges.length;
+      }
+    });
+    return changed;
+  };
+
+  const replace = (block: EditorNode, start: number, end: number, newText: string) => {
+    const pieces = textPieces(elementOf(block), start, end);
     const [first] = pieces;
     if (first === undefined) {
       throw new LiveUnconfirmedError('The matched text is no longer in the live document; re-read the page.');
@@ -121,18 +218,29 @@ const createLiveDocument = (provider: HocuspocusProvider, ydoc: Y.Doc, destroy: 
     });
 
   return {
-    document: { type: 'doc', content },
+    document,
     replace,
+    selection,
+    waitFor,
+    updateMarks,
+    canEdit,
     transact: (change) => ydoc.transact(change),
     confirm,
     close: destroy,
   };
 };
 
-export const openLiveDocument = (options: { url: string; pageId: string; token: string; timeoutMs: number }) =>
+export const openLiveDocument = (options: {
+  url: string;
+  pageId: string;
+  token: string;
+  timeoutMs: number;
+  readOnly?: boolean;
+}) =>
   new Promise<LiveDocument>((resolve, reject) => {
     const ydoc = new Y.Doc();
     let settled = false;
+    let canEdit = true;
     const fail = (error: Error) => {
       if (settled) {
         return;
@@ -164,7 +272,8 @@ export const openLiveDocument = (options: { url: string; pageId: string; token: 
       awareness: null,
       onAuthenticationFailed: ({ reason }) => fail(new LiveRefusedError(`Docmost refused the live-editing connection: ${reason}`)),
       onAuthenticated: ({ scope }) => {
-        if (scope === 'readonly') {
+        canEdit = scope !== 'readonly';
+        if (!canEdit && !options.readOnly) {
           fail(new LiveRefusedError('This account can only view the page, so it cannot edit it.'));
         }
       },
@@ -175,7 +284,7 @@ export const openLiveDocument = (options: { url: string; pageId: string; token: 
         }
         settled = true;
         clearTimeout(timer);
-        resolve(createLiveDocument(provider, ydoc, destroy));
+        resolve(createLiveDocument(provider, ydoc, destroy, canEdit));
       },
     });
     provider.attach();
