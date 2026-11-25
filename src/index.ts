@@ -71,7 +71,7 @@ const pageReferenceSchema = z
 const readOnlyAnnotations = { readOnlyHint: true, openWorldHint: true };
 
 const server = new McpServer(
-  { name: 'docmost', version: '0.4.0' },
+  { name: 'docmost', version: '0.5.0' },
   {
     instructions:
       'Docmost wiki access. Every page argument accepts a page id, slug id or page URL. Read a page with get_page before changing it. For small changes use edit_page with text copied exactly from get_page output. For whole-body rewrites use update_page with operation replace and pass the updatedAt from your read as expectedUpdatedAt. Markdown bodies must not repeat the page title as a leading # heading. To comment on a sentence, pass add_comment a quote copied from get_page.',
