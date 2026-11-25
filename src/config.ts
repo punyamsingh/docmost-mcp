@@ -9,6 +9,7 @@ export type DocmostConfig = {
   email: string;
   password: string;
   sessionFile: string;
+  collabUrl: string;
 };
 
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,11 +35,14 @@ export const loadConfig = (): DocmostConfig => {
   const baseUrl = new URL(process.env.DOCMOST_URL ?? '').origin;
   const email = process.env.DOCMOST_EMAIL ?? '';
   const accountKey = createHash('sha256').update(`${baseUrl}\n${email}`).digest('hex').slice(0, 16);
+  const collabUrl = new URL(process.env.DOCMOST_COLLAB_URL || `${baseUrl}/collab`);
+  collabUrl.protocol = collabUrl.protocol.replace(/^http/, 'ws');
 
   return {
     baseUrl,
     email,
     password: process.env.DOCMOST_PASSWORD ?? '',
     sessionFile: join(cacheDirectory, `session-${accountKey}.json`),
+    collabUrl: collabUrl.toString(),
   };
 };
