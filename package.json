@@ -15,7 +15,8 @@
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', 0o755)\"",
     "prepare": "npm run build",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "test": "npm run build && tsc -p test && node --test \"test/*.test.ts\""
   },
   "keywords": [
     "mcp",
@@ -38,7 +39,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20.12.0"
+    "node": ">=22.18.0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
