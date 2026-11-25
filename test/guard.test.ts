@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makePage, type EditorNode } from './fake-docmost.ts';
+import { doc, makePage, paragraph, text, type EditorNode } from './fake-docmost.ts';
 import { startHarness } from './helpers.ts';
-
-const text = (value: string, marks?: EditorNode['marks']): EditorNode => ({ type: 'text', text: value, ...(marks ? { marks } : {}) });
-const paragraph = (...content: EditorNode[]): EditorNode => ({ type: 'paragraph', content });
-const doc = (...content: EditorNode[]): EditorNode => ({ type: 'doc', content });
 
 const mention: EditorNode = {
   type: 'mention',
