@@ -148,7 +148,7 @@ The server reaches Docmost's collaboration websocket at `DOCMOST_URL` + `/collab
 
 - Uploading local image files is not supported yet; reference images that are already hosted somewhere by URL.
 - No tools for deleting or moving pages, or for permissions.
-- Mentions are looked up through Docmost's people search, which returns at most 10 people, so in a very large workspace an exact name can fall outside them and be refused.
+- Mentions are looked up through Docmost's people search, 100 people at a time; when 100 or more people match a name, uniqueness can't be confirmed and the mention is refused.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
 - When the collaboration websocket can't be reached, `edit_page` falls back to writing the saved page. Docmost saves what people type 10 to 45 seconds after they type it, so in that case text typed in that window by someone with the page open can be lost.
 - Before a whole-body rewrite the server compares the live text with the saved text, not formatting, so bold or colour added in the last 45 seconds without typing can still be lost by a rewrite.

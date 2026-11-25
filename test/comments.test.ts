@@ -122,6 +122,13 @@ test('add_comment refuses a quote that appears twice', async (t) => {
   assert.deepEqual(docmost.commentWrites(), []);
 });
 
+test('add_comment counts overlapping occurrences when checking that a quote is unique', async (t) => {
+  const { docmost, server } = await startHarness(t, [launchPage(paragraph(text('Status: aaa.')))]);
+
+  refusal(await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'aa' }), /appears 2 times/);
+  assert.deepEqual(docmost.commentWrites(), []);
+});
+
 test('add_comment refuses a quote crossing a mention, spanning lines, or inside a code block', async (t) => {
   const mention = { type: 'mention', attrs: { id: 'm1', label: 'Priya', entityType: 'user', entityId: PRIYA.id } };
   const page = launchPage(
@@ -195,6 +202,14 @@ test('a mention with no member, or several, of that name is refused', async (t) 
 
   refusal(await server.call('add_comment', { pageId: 'p1', text: '@[Nobody] hi' }), /no member is named "Nobody"; closest: Nobody Else/);
   refusal(await server.call('add_comment', { pageId: 'p1', text: '@[Priya Sharma] hi' }), /2 members are named "Priya Sharma"/);
+  assert.deepEqual(docmost.commentWrites(), []);
+});
+
+test('a mention is refused when the people search is full, since uniqueness cannot be confirmed', async (t) => {
+  const others = Array.from({ length: 99 }, (_, index) => ({ id: `user-sam-${index}`, name: `Sam ${index}` }));
+  const { docmost, server } = await startHarness(t, [launchPage()], { members: [{ id: 'user-sam', name: 'Sam' }, ...others] });
+
+  refusal(await server.call('add_comment', { pageId: 'p1', text: '@[Sam] hi' }), /at least 100 members match "Sam"/);
   assert.deepEqual(docmost.commentWrites(), []);
 });
 
@@ -322,6 +337,17 @@ test('delete_comment refuses a thread with replies unless deleteReplies is set',
   refusal(await server.call('delete_comment', { commentId: 'c1' }), /has 2 replies.*deleteReplies: true/);
   assert.deepEqual(docmost.commentWrites(), []);
   assert.equal(docmost.comments().length, 3);
+});
+
+test('delete_comment refuses when the page has more comments than it can list, unless deleteReplies is set', async (t) => {
+  const filler = Array.from({ length: 1000 }, (_, index) => makeComment({ id: `f${index}`, pageId: 'p1' }));
+  const late = makeComment({ id: 'late-reply', pageId: 'p1', parentCommentId: 'c1' });
+  const { docmost, server } = await startHarness(t, [launchPage()], {
+    comments: [makeComment({ id: 'c1', pageId: 'p1' }), ...filler, late],
+  });
+
+  refusal(await server.call('delete_comment', { commentId: 'c1' }), /more than 1000 comments.*deleteReplies: true/);
+  assert.deepEqual(docmost.commentWrites(), []);
 });
 
 test('delete_comment with deleteReplies deletes the whole thread', async (t) => {

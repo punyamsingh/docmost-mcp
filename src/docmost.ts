@@ -409,6 +409,7 @@ export const editInPlace = (document: EditorNode, oldText: string, newText: stri
 };
 
 const MENTION_PATTERN = /@\[([^\]\n]+)\]/g;
+const MENTION_SEARCH_LIMIT = 100;
 
 const normalizeName = (name: string): string => name.trim().replace(/\s+/g, ' ').toLowerCase();
 
@@ -490,6 +491,14 @@ const hasStaleMark = (node: EditorNode, isStale: (attrs: Record<string, unknown>
   (node.marks ?? []).some((mark) => mark.type === 'comment' && isStale(z.record(z.string(), z.unknown()).catch({}).parse(mark.attrs))) ||
   (node.content ?? []).some((child) => hasStaleMark(child, isStale));
 
+const countOverlapping = (text: string, searchText: string): number => {
+  let count = 0;
+  for (let at = text.indexOf(searchText); at >= 0; at = text.indexOf(searchText, at + 1)) {
+    count += 1;
+  }
+  return count;
+};
+
 export type QuoteMatch = { block: EditorNode; start: number; end: number; text: string };
 
 export const findQuote = (document: EditorNode, quote: string): QuoteMatch => {
@@ -509,12 +518,16 @@ export const findQuote = (document: EditorNode, quote: string): QuoteMatch => {
     throw new DocmostError('Refused: the quote is inside a code block, which cannot hold comments. Nothing was posted.');
   }
   const end = start + match.length;
+  const blockText = (match.block.content ?? []).map((child) => inlineText(child, false)).join('');
+  const occurrences = countOverlapping(blockText, blockText.slice(start, end));
+  if (occurrences > 1) {
+    throw new DocmostError(`Refused: the quote appears ${occurrences} times; include more surrounding text. Nothing was posted.`);
+  }
   if (hasMarkInRange(match.block, start, end, 'comment')) {
     throw new DocmostError(
       'Refused: the quoted text already has a comment, and Docmost keeps one comment per stretch of text; reply to that comment instead. Nothing was posted.',
     );
   }
-  const blockText = (match.block.content ?? []).map((child) => inlineText(child, false)).join('');
   return { block: match.block, start, end, text: blockText.slice(start, end) };
 };
 
@@ -733,11 +746,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return parsedData.data;
   };
 
-  const collectAllPages = async <ItemSchema extends z.ZodType>(
+  const collectPages = async <ItemSchema extends z.ZodType>(
     endpoint: string,
     body: object,
     itemSchema: ItemSchema,
-  ): Promise<z.infer<ItemSchema>[]> => {
+  ): Promise<{ items: z.infer<ItemSchema>[]; complete: boolean }> => {
     const collectedItems: z.infer<ItemSchema>[] = [];
     let cursor: string | undefined;
     do {
@@ -745,8 +758,14 @@ export const createDocmostClient = (config: DocmostConfig) => {
       collectedItems.push(...result.items);
       cursor = result.meta.hasNextPage ? (result.meta.nextCursor ?? undefined) : undefined;
     } while (cursor && collectedItems.length < MAX_LIST_ITEMS);
-    return collectedItems;
+    return { items: collectedItems, complete: cursor === undefined };
   };
+
+  const collectAllPages = async <ItemSchema extends z.ZodType>(
+    endpoint: string,
+    body: object,
+    itemSchema: ItemSchema,
+  ): Promise<z.infer<ItemSchema>[]> => (await collectPages(endpoint, body, itemSchema)).items;
 
   const pageUrl = (slugId: string): string => `${config.baseUrl}/p/${slugId}`;
 
@@ -980,8 +999,17 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const names = [...new Set([...text.matchAll(MENTION_PATTERN)].map((match) => (match[1] ?? '').trim()))];
     const members = new Map<string, Member>();
     for (const name of names) {
-      const { users = [] } = await post('/search/suggest', { query: name, includeUsers: true }, suggestSchema);
+      const { users = [] } = await post(
+        '/search/suggest',
+        { query: name, includeUsers: true, limit: MENTION_SEARCH_LIMIT },
+        suggestSchema,
+      );
       const exactMatches = users.filter((user) => normalizeName(user.name ?? '') === normalizeName(name));
+      if (exactMatches.length === 1 && users.length >= MENTION_SEARCH_LIMIT) {
+        throw new DocmostError(
+          `Refused: at least ${MENTION_SEARCH_LIMIT} members match "${name}", so the mention can't be confirmed as unique. Nothing was posted.`,
+        );
+      }
       const [member] = exactMatches;
       if (exactMatches.length !== 1 || member === undefined) {
         const closest = users.flatMap((user) => (user.name ? [user.name] : [])).slice(0, 5);
@@ -1100,11 +1128,15 @@ export const createDocmostClient = (config: DocmostConfig) => {
 
   const deleteComment = async (commentId: string, deleteReplies: boolean) => {
     const target = await commentInfo(commentId);
-    const replies = target.parentCommentId
-      ? []
-      : (await collectAllPages('/comments', { pageId: target.pageId }, commentSchema)).filter(
-          (comment) => comment.parentCommentId === target.id,
-        );
+    const pageComments = target.parentCommentId
+      ? { items: [], complete: true }
+      : await collectPages('/comments', { pageId: target.pageId }, commentSchema);
+    const replies = pageComments.items.filter((comment) => comment.parentCommentId === target.id);
+    if (!pageComments.complete && !deleteReplies) {
+      throw new DocmostError(
+        `Refused: the page has more than ${MAX_LIST_ITEMS} comments, so the server can't confirm this comment has no replies; pass deleteReplies: true to delete it with any replies. Nothing was deleted.`,
+      );
+    }
     if (replies.length > 0 && !deleteReplies) {
       throw new DocmostError(
         `Refused: this comment has ${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}, which Docmost deletes with it permanently; pass deleteReplies: true to delete the whole thread. Nothing was deleted.`,

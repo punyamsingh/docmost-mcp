@@ -537,7 +537,7 @@ export const startFakeDocmost = async (
     if (endpoint === '/search/suggest') {
       const query = typeof body.query === 'string' ? body.query.toLowerCase() : '';
       const users = body.includeUsers === true ? members.filter((member) => member.name.toLowerCase().includes(query)) : [];
-      send(response, 200, { data: { users: users.slice(0, 10), pages: [] } });
+      send(response, 200, { data: { users: users.slice(0, typeof body.limit === 'number' ? body.limit : 10), pages: [] } });
       return;
     }
     if (endpoint.startsWith('/comments/') && endpoint !== '/comments/create') {
@@ -550,8 +550,16 @@ export const startFakeDocmost = async (
       return;
     }
     if (endpoint === '/comments') {
-      const items = comments.filter((comment) => comment.pageId === page.id).map(commentView);
-      send(response, 200, { data: { items, meta: { hasNextPage: false } } });
+      const pageComments = comments.filter((comment) => comment.pageId === page.id);
+      const limit = typeof body.limit === 'number' ? body.limit : 20;
+      const start = typeof body.cursor === 'string' ? Number(body.cursor) : 0;
+      const hasNextPage = start + limit < pageComments.length;
+      send(response, 200, {
+        data: {
+          items: pageComments.slice(start, start + limit).map(commentView),
+          meta: { hasNextPage, nextCursor: hasNextPage ? String(start + limit) : null },
+        },
+      });
       return;
     }
     if (endpoint === '/comments/create') {
