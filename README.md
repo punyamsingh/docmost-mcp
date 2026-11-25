@@ -21,7 +21,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 
 - **Markdown in and out**: pages come back as Markdown and are written from Markdown.
 - **Safe edits**: an optional stale-write check stops a replace from overwriting someone else's newer change, and rewrites that would delete comments, mentions or diagrams are refused.
-- **Live collaboration**: changes go through Docmost's real-time layer, so people with the page open see them instead of overwriting them.
+- **Live collaboration**: changes go through Docmost's real-time layer, so people with the page open see them straight away (see [Limitations](#limitations) for recent unsaved typing).
 - **Any page reference**: a page id, slug id or the URL copied from the browser.
 
 ## Tools
@@ -34,15 +34,17 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
-| `edit_page` | Replaces an exact piece of text in a page body by rewriting the body with the change |
+| `edit_page` | Replaces an exact piece of text in a page, in place when it is plain text, leaving the rest of the page as it is |
 
 Every tool that takes a page accepts a page id, a slug id, or the page URL copied from the browser.
 
 Pass the `updatedAt` from `get_page` as `expectedUpdatedAt` to `update_page`, and a replace is refused if someone changed the page in the meantime. `edit_page` reads the current body itself, so it applies on top of other people's changes as long as the text still matches exactly once.
 
-A replace, and so every `edit_page`, rewrites the whole body from Markdown. Content that Markdown cannot carry would be deleted, so the server refuses a replace on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
+When `oldText` and `newText` are plain text and each match sits inside one paragraph, heading or code block, `edit_page` changes just that text in Docmost's editor data, so comments, mentions, colours and everything else on the page are kept. The new text takes the formatting of the text it replaces, as typing over a selection does in the editor. The result's `editedInPlace` says which way the edit went.
 
-Content updates go through Docmost's real-time collaboration layer, so if someone has the page open while it is updated, their editor picks up the change instead of overwriting it.
+Otherwise, for example when the new text has Markdown formatting or the match crosses a line break or a mention, the edit rewrites the whole body from Markdown, as an `update_page` replace does. Content that Markdown cannot carry would be deleted, so the server refuses such a rewrite on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
+
+Content updates go through Docmost's real-time collaboration layer, so if someone has the page open while it is updated, their editor shows the change straight away.
 
 ## Requirements
 
@@ -130,6 +132,7 @@ claude mcp add docmost --scope user -- node "$PWD/build/index.js"
 - Uploading local image files is not supported yet; reference images that are already hosted somewhere by URL.
 - No tools for deleting or moving pages, comments, or permissions.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
+- Docmost saves what people type 10 to 45 seconds after they type it, and `edit_page` and an `update_page` replace build on the last saved version. So if someone has the page open, text they typed in that window can be lost. Append and prepend are not affected.
 
 ## License
 
