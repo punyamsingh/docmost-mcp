@@ -26,7 +26,7 @@ Content updates go through Docmost's real-time collaboration layer, so if someon
 
 ## Requirements
 
-- Node.js 20.12 or newer
+- Node.js 22.18 or newer
 - Docmost v0.70 or newer
 - A Docmost account without MFA. Edits are attributed to this account in page history, so each person should use their own.
 
@@ -81,6 +81,8 @@ claude mcp add docmost --scope user -- node "$PWD/build/index.js"
 ```
 
 `.env` is git-ignored. Variables set in the client's config take precedence over it.
+
+`npm test` builds the server and runs the test suite against a fake Docmost, so it needs no Docmost instance.
 
 ## Limitations
 
