@@ -4,6 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@punyamsingh/docmost-mcp.svg)](https://www.npmjs.com/package/@punyamsingh/docmost-mcp)
 [![tests](https://github.com/punyamsingh/docmost-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/punyamsingh/docmost-mcp/actions/workflows/test.yml)
 [![license: MIT](https://img.shields.io/npm/l/@punyamsingh/docmost-mcp.svg)](./LICENSE)
+[![punyamsingh/docmost-mcp MCP server](https://glama.ai/mcp/servers/punyamsingh/docmost-mcp/badges/score.svg)](https://glama.ai/mcp/servers/punyamsingh/docmost-mcp)
 
 An MCP server for **self-hosted [Docmost](https://docmost.com)**. Read, search, create and edit wiki pages in Markdown from Claude Code, Claude Desktop, Cursor, VS Code or any other MCP client. Works with the free Community Edition: no Enterprise licence and no API key, just a normal Docmost login.
 
