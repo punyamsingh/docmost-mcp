@@ -1,8 +1,28 @@
-# docmost-mcp
+# Docmost MCP server
 
-An MCP server for **self-hosted [Docmost](https://docmost.com)**. Read, search, create and update wiki pages in Markdown from Claude Code, Claude Desktop, Cursor or any other MCP client.
+[![npm version](https://img.shields.io/npm/v/@punyamsingh/docmost-mcp.svg)](https://www.npmjs.com/package/@punyamsingh/docmost-mcp)
+[![npm downloads](https://img.shields.io/npm/dm/@punyamsingh/docmost-mcp.svg)](https://www.npmjs.com/package/@punyamsingh/docmost-mcp)
+[![tests](https://github.com/punyamsingh/docmost-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/punyamsingh/docmost-mcp/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/npm/l/@punyamsingh/docmost-mcp.svg)](./LICENSE)
+
+An MCP server for **self-hosted [Docmost](https://docmost.com)**. Read, search, create and edit wiki pages in Markdown from Claude Code, Claude Desktop, Cursor, VS Code or any other MCP client. Works with the free Community Edition: no Enterprise licence and no API key, just a normal Docmost login.
+
+```bash
+claude mcp add docmost --scope user \
+  -e DOCMOST_URL=https://docs.example.com \
+  -e DOCMOST_EMAIL=you@example.com \
+  -e DOCMOST_PASSWORD='your-password' \
+  -- npx -y @punyamsingh/docmost-mcp
+```
+
+That is all Claude Code needs; config for Claude Desktop, Cursor and VS Code is under [Setup](#setup).
 
 Docmost's official MCP server and API keys are part of its paid Enterprise edition. This server needs neither. It logs in with a normal Docmost account and calls the same API the Docmost web app uses. Since Docmost v0.70 that API accepts and returns Markdown, and the server converts it to and from its editor format.
+
+- **Markdown in and out**: pages come back as Markdown and are written from Markdown.
+- **Safe edits**: an optional stale-write check stops a replace from overwriting someone else's newer change, and rewrites that would delete comments, mentions or diagrams are refused.
+- **Live collaboration**: changes go through Docmost's real-time layer, so people with the page open see them instead of overwriting them.
+- **Any page reference**: a page id, slug id or the URL copied from the browser.
 
 ## Tools
 
@@ -52,6 +72,27 @@ Add the following to the client's MCP config (`claude_desktop_config.json`, `~/.
 {
   "mcpServers": {
     "docmost": {
+      "command": "npx",
+      "args": ["-y", "@punyamsingh/docmost-mcp"],
+      "env": {
+        "DOCMOST_URL": "https://docs.example.com",
+        "DOCMOST_EMAIL": "you@example.com",
+        "DOCMOST_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+### VS Code
+
+Add the following to `.vscode/mcp.json` in a workspace, or to your user MCP config:
+
+```json
+{
+  "servers": {
+    "docmost": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "@punyamsingh/docmost-mcp"],
       "env": {
