@@ -1,6 +1,6 @@
 {
   "name": "@punyamsingh/docmost-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "mcpName": "io.github.punyamsingh/docmost-mcp",
   "description": "MCP server for self-hosted Docmost: let Claude, Cursor and other AI agents read, search, create and edit wiki pages in Markdown. No Enterprise API key needed.",
   "type": "module",
@@ -57,10 +57,13 @@
     "node": ">=22.18.0"
   },
   "dependencies": {
+    "@hocuspocus/provider": "^4.9.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "yjs": "^13.6.33",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@hocuspocus/server": "^4.9.0",
     "@types/node": "^24.19.2",
     "typescript": "^5.9.3"
   }
