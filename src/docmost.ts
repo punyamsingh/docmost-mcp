@@ -84,6 +84,80 @@ const pageSchema = z.object({
     .nullish(),
 });
 
+type EditorNode = {
+  type: string;
+  attrs?: Record<string, unknown>;
+  marks?: { type: string }[];
+  content?: EditorNode[];
+};
+
+const editorNodeSchema: z.ZodType<EditorNode> = z.lazy(() =>
+  z.object({
+    type: z.string(),
+    attrs: z.record(z.string(), z.unknown()).optional(),
+    marks: z.array(z.object({ type: z.string() })).optional(),
+    content: z.array(editorNodeSchema).optional(),
+  }),
+);
+
+const editorPageSchema = z.object({
+  id: z.string(),
+  title: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+  content: editorNodeSchema.nullish(),
+});
+
+const MARKDOWN_SAFE_NODES = new Set([
+  'doc',
+  'paragraph',
+  'text',
+  'hardBreak',
+  'heading',
+  'bulletList',
+  'orderedList',
+  'listItem',
+  'taskList',
+  'taskItem',
+  'blockquote',
+  'horizontalRule',
+  'codeBlock',
+  'mathBlock',
+  'callout',
+  'details',
+  'detailsSummary',
+  'detailsContent',
+  'image',
+  'table',
+  'tableRow',
+  'tableHeader',
+  'tableCell',
+]);
+
+const MARKDOWN_SAFE_MARKS = new Set(['bold', 'italic', 'strike', 'code', 'link']);
+
+const isMergedCell = (node: EditorNode): boolean =>
+  [node.attrs?.colspan, node.attrs?.rowspan].some((span) => typeof span === 'number' && span > 1);
+
+export const findMarkdownLossyContent = (root: EditorNode): string[] => {
+  const lossyContent = new Set<string>();
+  const visit = (node: EditorNode) => {
+    if (!MARKDOWN_SAFE_NODES.has(node.type)) {
+      lossyContent.add(node.type);
+    }
+    if (isMergedCell(node)) {
+      lossyContent.add('merged table cell');
+    }
+    for (const mark of node.marks ?? []) {
+      if (!MARKDOWN_SAFE_MARKS.has(mark.type)) {
+        lossyContent.add(mark.type);
+      }
+    }
+    node.content?.forEach(visit);
+  };
+  visit(root);
+  return [...lossyContent];
+};
+
 export type DocmostSpace = z.infer<typeof spaceSchema>;
 export type DocmostTreePage = z.infer<typeof treePageSchema>;
 export type DocmostSearchResult = z.infer<typeof searchResultSchema>;
@@ -105,6 +179,14 @@ export type UpdatePageInput = {
   markdown?: string;
   operation: ContentOperation;
   icon?: string;
+  expectedUpdatedAt?: string;
+};
+
+export type EditPageInput = {
+  pageId: string;
+  oldText: string;
+  newText: string;
+  replaceAll: boolean;
 };
 
 export class DocmostError extends Error {}
@@ -166,7 +248,7 @@ export const normalizePageReference = (pageReference: string): string => {
 };
 
 export const createDocmostClient = (config: DocmostConfig) => {
-  let authToken: string | undefined;
+  let tokenPromise: Promise<string> | undefined;
 
   const readCachedToken = async (): Promise<string | undefined> => {
     try {
@@ -221,10 +303,18 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return token;
   };
 
-  const getToken = async (): Promise<string> => {
-    authToken ??= (await readCachedToken()) ?? (await login());
-    return authToken;
+  const setTokenPromise = (nextToken: Promise<string>): Promise<string> => {
+    tokenPromise = nextToken;
+    nextToken.catch(() => {
+      if (tokenPromise === nextToken) {
+        tokenPromise = undefined;
+      }
+    });
+    return nextToken;
   };
+
+  const getToken = (): Promise<string> =>
+    tokenPromise ?? setTokenPromise(readCachedToken().then((cachedToken) => cachedToken ?? login()));
 
   const post = async <ResponseSchema extends z.ZodType>(
     endpoint: string,
@@ -238,10 +328,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
         body: JSON.stringify(body),
       });
 
-    let response = await send(await getToken());
+    const usedToken = getToken();
+    let response = await send(await usedToken);
     if (response.status === 401) {
-      authToken = await login();
-      response = await send(authToken);
+      const freshToken = tokenPromise === usedToken ? setTokenPromise(login()) : getToken();
+      response = await send(await freshToken);
     }
     if (!response.ok) {
       throw new DocmostError(`Docmost ${endpoint} failed (${response.status}): ${await readErrorMessage(response)}`);
@@ -318,6 +409,24 @@ export const createDocmostClient = (config: DocmostConfig) => {
   };
 
   const updatePage = async (input: UpdatePageInput): Promise<DocmostPage> => {
+    if (input.markdown !== undefined && input.operation === 'replace') {
+      const expectedTime = input.expectedUpdatedAt === undefined ? undefined : Date.parse(input.expectedUpdatedAt);
+      if (Number.isNaN(expectedTime)) {
+        throw new DocmostError(`expectedUpdatedAt "${input.expectedUpdatedAt}" is not a timestamp; pass updatedAt from get_page.`);
+      }
+      const currentPage = await post('/pages/info', { pageId: normalizePageReference(input.pageId) }, editorPageSchema);
+      if (expectedTime !== undefined && Date.parse(currentPage.updatedAt ?? '') !== expectedTime) {
+        throw new DocmostError(
+          `Page changed at ${currentPage.updatedAt ?? 'an unknown time'} (you read ${input.expectedUpdatedAt}); re-read it with get_page before replacing.`,
+        );
+      }
+      const lossyContent = currentPage.content ? findMarkdownLossyContent(currentPage.content) : [];
+      if (lossyContent.length > 0) {
+        throw new DocmostError(
+          `Refused: ${currentPage.title ?? currentPage.id} holds content Markdown cannot carry (${lossyContent.join(', ')}), which rewriting the body would delete. Use append or prepend, or edit it in Docmost.`,
+        );
+      }
+    }
     const contentFields =
       input.markdown === undefined
         ? {}
@@ -331,7 +440,28 @@ export const createDocmostClient = (config: DocmostConfig) => {
     );
   };
 
-  return { pageUrl, listSpaces, listChildPages, searchPages, getPage, createPage, updatePage };
+  const editPage = async (input: EditPageInput): Promise<{ page: DocmostPage; replacements: number }> => {
+    const currentPage = await getPage(input.pageId);
+    const oldText = input.oldText.replaceAll('\r\n', '\n');
+    const bodyParts = currentPage.markdown.split(oldText);
+    const replacements = bodyParts.length - 1;
+    if (replacements === 0) {
+      throw new DocmostError(
+        `oldText not found in ${currentPage.title ?? currentPage.id}; re-read the page with get_page and copy the text exactly.`,
+      );
+    }
+    if (replacements > 1 && !input.replaceAll) {
+      throw new DocmostError(`oldText appears ${replacements} times; include more surrounding text or set replaceAll.`);
+    }
+    const page = await updatePage({
+      pageId: currentPage.id,
+      markdown: bodyParts.join(input.newText.replaceAll('\r\n', '\n')),
+      operation: 'replace',
+    });
+    return { page, replacements };
+  };
+
+  return { pageUrl, listSpaces, listChildPages, searchPages, getPage, createPage, updatePage, editPage };
 };
 
 export type DocmostClient = ReturnType<typeof createDocmostClient>;

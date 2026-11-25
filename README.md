@@ -11,11 +11,16 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `list_spaces` | Lists the spaces the account can see, with their ids |
 | `list_pages` | Lists the root pages of a space, or the children of a page |
 | `search_pages` | Full-text search, optionally within one space |
-| `get_page` | Returns a page as Markdown, with its id, space, parent and URL |
+| `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
+| `edit_page` | Replaces an exact piece of text in a page body by rewriting the body with the change |
 
 Every tool that takes a page accepts a page id, a slug id, or the page URL copied from the browser.
+
+Pass the `updatedAt` from `get_page` as `expectedUpdatedAt` to `update_page`, and a replace is refused if someone changed the page in the meantime. `edit_page` reads the current body itself, so it applies on top of other people's changes as long as the text still matches exactly once.
+
+A replace, and so every `edit_page`, rewrites the whole body from Markdown. Content that Markdown cannot carry would be deleted, so the server refuses a replace on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
 
 Content updates go through Docmost's real-time collaboration layer, so if someone has the page open while it is updated, their editor picks up the change instead of overwriting it.
 
