@@ -99,3 +99,45 @@ test('with replaceAll, one match crossing a mention sends the whole edit to the 
   assert.match(result.text, /cannot carry \(mention\).*because oldText crosses a mention/);
   assert.deepEqual(written, []);
 });
+
+test('a newText that starts a block with Markdown syntax rewrites the body instead of writing it literally', async (t) => {
+  const page = makePage({ id: 'p1', markdown: 'anchor\n\nbody', json: doc(paragraph(text('anchor')), paragraph(text('body'))) });
+  const { result, written } = await editPage(t, page, { oldText: 'anchor', newText: '# Heading' });
+  assert.equal(JSON.parse(result.text).editedInPlace, false);
+  assert.deepEqual(written, [markdownWrite('# Heading\n\nbody')]);
+});
+
+test('text shown in two places with different formatting is refused without replaceAll', async (t) => {
+  const page = makePage({
+    id: 'p1',
+    markdown: 'alpha beta\n\nalpha **beta**',
+    json: doc(paragraph(text('alpha beta')), paragraph(text('alpha '), text('beta', [{ type: 'bold' }]))),
+  });
+  const { result, written } = await editPage(t, page, { oldText: 'alpha beta', newText: 'gamma' });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /oldText appears 2 times; include more surrounding text or set replaceAll/);
+  assert.deepEqual(written, []);
+});
+
+test('oldText spanning the placeholder for a mention is never edited in place', async (t) => {
+  const page = makePage({ id: 'p1', markdown: 'A@Test UserB', json: doc(paragraph(text('A'), mention, text('B'))) });
+  const { result, written } = await editPage(t, page, { oldText: 'A￼B', newText: 'C' });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /oldText not found/);
+  assert.deepEqual(written, []);
+});
+
+test('the guard re-reads the editor data just before a Markdown rewrite', async (t) => {
+  const page = makePage({ id: 'p1', markdown: 'anchor', json: doc(paragraph(text('anchor'))) });
+  const { docmost, server } = await startHarness(t, [page]);
+  docmost.onRequest((request) => {
+    const stored = docmost.page('p1');
+    if (request.endpoint === '/pages/info' && request.body.format === 'markdown' && stored) {
+      stored.json = doc(paragraph(commented));
+    }
+  });
+  const result = await server.call('edit_page', { pageId: 'p1', oldText: 'anchor', newText: '**anchor**' });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /cannot carry \(comment\)/);
+  assert.deepEqual(docmost.writes(), []);
+});

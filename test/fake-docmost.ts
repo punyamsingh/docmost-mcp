@@ -65,6 +65,7 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
   let loginCount = 0;
   let clock = Date.parse(START_TIME);
   let updateRejection: { status: number; message: string } | undefined;
+  const requestHooks: ((request: FakeRequest) => void)[] = [];
 
   const findPage = (reference: unknown) => pages.find((page) => page.id === reference || page.slugId === reference);
 
@@ -180,6 +181,7 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
       const endpoint = (request.url ?? '').replace(/^\/api/, '');
       const token = request.headers.authorization?.replace(/^Bearer /, '');
       requests.push({ endpoint, body });
+      requestHooks.forEach((hook) => hook({ endpoint, body }));
       handle(endpoint, body, token, response);
     });
   });
@@ -197,6 +199,9 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
     revokeTokens: () => validTokens.clear(),
     rejectUpdates: (status: number, message: string) => {
       updateRejection = { status, message };
+    },
+    onRequest: (hook: (request: FakeRequest) => void) => {
+      requestHooks.push(hook);
     },
     page: (reference: string) => findPage(reference),
     close: () =>

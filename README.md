@@ -21,7 +21,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 
 - **Markdown in and out**: pages come back as Markdown and are written from Markdown.
 - **Safe edits**: an optional stale-write check stops a replace from overwriting someone else's newer change, and rewrites that would delete comments, mentions or diagrams are refused.
-- **Live collaboration**: changes go through Docmost's real-time layer, so people with the page open see them instead of overwriting them.
+- **Live collaboration**: changes go through Docmost's real-time layer, so people with the page open see them straight away (see [Limitations](#limitations) for recent unsaved typing).
 - **Any page reference**: a page id, slug id or the URL copied from the browser.
 
 ## Tools
@@ -44,7 +44,7 @@ When `oldText` and `newText` are plain text and each match sits inside one parag
 
 Otherwise, for example when the new text has Markdown formatting or the match crosses a line break or a mention, the edit rewrites the whole body from Markdown, as an `update_page` replace does. Content that Markdown cannot carry would be deleted, so the server refuses such a rewrite on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
 
-Content updates go through Docmost's real-time collaboration layer, so if someone has the page open while it is updated, their editor picks up the change instead of overwriting it.
+Content updates go through Docmost's real-time collaboration layer, so if someone has the page open while it is updated, their editor shows the change straight away.
 
 ## Requirements
 
@@ -132,6 +132,7 @@ claude mcp add docmost --scope user -- node "$PWD/build/index.js"
 - Uploading local image files is not supported yet; reference images that are already hosted somewhere by URL.
 - No tools for deleting or moving pages, comments, or permissions.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
+- Docmost saves what people type 10 to 45 seconds after they type it, and `edit_page` and an `update_page` replace build on the last saved version. So if someone has the page open, text they typed in that window can be lost. Append and prepend are not affected.
 
 ## License
 

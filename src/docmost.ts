@@ -251,7 +251,12 @@ const replaceRange = (children: EditorNode[], start: number, end: number, newTex
   return mergeTextNodes(result);
 };
 
-export type InPlaceEdit = { content: EditorNode; replacements: number } | { reason: string };
+const BLOCK_SYNTAX_START = /^(?:#{1,6}(?:\s|$)|[-+]\s|-{3,}\s*$|>|\d{1,9}[.)]\s|```|~~~|\|)/;
+
+export type InPlaceEdit =
+  | { content: EditorNode; replacements: number }
+  | { ambiguousMatches: number }
+  | { reason: string };
 
 export const editInPlace = (document: EditorNode, oldText: string, newText: string, replaceAll: boolean): InPlaceEdit => {
   const plainOldText = toPlainText(oldText);
@@ -259,6 +264,7 @@ export const editInPlace = (document: EditorNode, oldText: string, newText: stri
   const editedDocument = structuredClone(document);
   const matches: { block: EditorNode; starts: number[]; length: number; replacement: string | undefined }[] = [];
   let crossesMention = false;
+  let crossesInlineNode = false;
 
   const visit = (node: EditorNode) => {
     if (!TEXT_BLOCK_TYPES.has(node.type)) {
@@ -271,17 +277,36 @@ export const editInPlace = (document: EditorNode, oldText: string, newText: stri
       return;
     }
     const children = node.content ?? [];
-    const starts = findAll(children.map((child) => inlineText(child, false)).join(''), searchText);
+    const inlineNodeOffsets: number[] = [];
+    let offset = 0;
+    for (const child of children) {
+      if (child.type !== 'text') {
+        inlineNodeOffsets.push(offset);
+      }
+      offset += inlineText(child, false).length;
+    }
+    const allStarts = findAll(children.map((child) => inlineText(child, false)).join(''), searchText);
+    const starts = allStarts.filter(
+      (start) => !inlineNodeOffsets.some((at) => at >= start && at < start + searchText.length),
+    );
+    if (starts.length < allStarts.length) {
+      crossesInlineNode = true;
+    }
     if (!isCode && findAll(children.map((child) => inlineText(child, true)).join(''), searchText).length > starts.length) {
       crossesMention = true;
     }
     if (starts.length > 0) {
-      matches.push({ block: node, starts, length: searchText.length, replacement: isCode ? newText : plainNewText });
+      const startsBlockWithSyntax = starts.includes(0) && BLOCK_SYNTAX_START.test(newText);
+      const replacement = isCode ? newText : startsBlockWithSyntax ? undefined : plainNewText;
+      matches.push({ block: node, starts, length: searchText.length, replacement });
     }
   };
   visit(editedDocument);
 
   const replacements = matches.reduce((total, match) => total + match.starts.length, 0);
+  if (crossesInlineNode) {
+    return { reason: 'oldText crosses an inline element such as a mention' };
+  }
   if (crossesMention) {
     return { reason: 'oldText crosses a mention' };
   }
@@ -294,7 +319,7 @@ export const editInPlace = (document: EditorNode, oldText: string, newText: stri
     };
   }
   if (replacements > 1 && !replaceAll) {
-    return { reason: `oldText appears ${replacements} times in the page text` };
+    return { ambiguousMatches: replacements };
   }
   for (const match of matches) {
     const { replacement } = match;
@@ -609,6 +634,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const inPlace = editorPage.content
       ? editInPlace(editorPage.content, oldText, newText, input.replaceAll)
       : { reason: 'the page is empty' };
+    if ('ambiguousMatches' in inPlace) {
+      throw new DocmostError(
+        `oldText appears ${inPlace.ambiguousMatches} times; include more surrounding text or set replaceAll.`,
+      );
+    }
     if ('content' in inPlace) {
       const page = toPage(
         await post(
@@ -631,7 +661,10 @@ export const createDocmostClient = (config: DocmostConfig) => {
     if (replacements > 1 && !input.replaceAll) {
       throw new DocmostError(`oldText appears ${replacements} times; include more surrounding text or set replaceAll.`);
     }
-    refuseLossyRewrite(editorPage, inPlace.reason);
+    refuseLossyRewrite(
+      await post('/pages/info', { pageId: editorPage.id }, editorPageSchema),
+      inPlace.reason,
+    );
     const page = toPage(
       await post(
         '/pages/update',

@@ -134,3 +134,13 @@ test('Docmost rejecting the write is reported, and nothing is retried through Ma
     ['json'],
   );
 });
+
+test('a # inside a sentence and a stored U+FFFC character are still edited in place', async (t) => {
+  const page = (issue: string) => doc(paragraph(text(`see ${issue}`)), paragraph(text('x￼y')));
+  const { docmost, server } = await startHarness(t, [makePage({ id: 'p1', json: page('12') })]);
+  const first = await server.call('edit_page', { pageId: 'p1', oldText: '12', newText: '#12' });
+  const second = await server.call('edit_page', { pageId: 'p1', oldText: 'x￼y', newText: 'z' });
+  assert.equal(JSON.parse(first.text).editedInPlace, true);
+  assert.equal(JSON.parse(second.text).editedInPlace, true);
+  assert.deepEqual(docmost.page('p1')?.json, doc(paragraph(text('see #12')), paragraph(text('z'))));
+});
