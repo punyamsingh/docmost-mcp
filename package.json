@@ -1,7 +1,8 @@
 {
   "name": "@punyamsingh/docmost-mcp",
-  "version": "0.2.0",
-  "description": "MCP server for self-hosted Docmost: read, search, create and update pages in Markdown",
+  "version": "0.2.1",
+  "mcpName": "io.github.punyamsingh/docmost-mcp",
+  "description": "MCP server for self-hosted Docmost: let Claude, Cursor and other AI agents read, search, create and edit wiki pages in Markdown. No Enterprise API key needed.",
   "type": "module",
   "main": "./build/index.js",
   "bin": {
@@ -20,10 +21,24 @@
   },
   "keywords": [
     "mcp",
-    "docmost",
+    "mcp-server",
     "model-context-protocol",
+    "docmost",
+    "docmost-mcp",
+    "self-hosted",
     "wiki",
-    "markdown"
+    "knowledge-base",
+    "documentation",
+    "markdown",
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "cursor",
+    "ai",
+    "ai-agents",
+    "llm",
+    "confluence-alternative",
+    "notion-alternative"
   ],
   "author": "Punyam Singh",
   "license": "MIT",

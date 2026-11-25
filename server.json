@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.punyamsingh/docmost-mcp",
+  "title": "Docmost (self-hosted)",
+  "description": "Read, search, create and edit self-hosted Docmost wiki pages in Markdown. No Enterprise API key.",
+  "repository": {
+    "url": "https://github.com/punyamsingh/docmost-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/punyamsingh/docmost-mcp#readme",
+  "version": "0.2.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@punyamsingh/docmost-mcp",
+      "version": "0.2.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "DOCMOST_URL",
+          "description": "Base URL of your Docmost, v0.70 or newer, e.g. https://docs.example.com",
+          "isRequired": true
+        },
+        {
+          "name": "DOCMOST_EMAIL",
+          "description": "Email of the Docmost account to log in with (an account without MFA)",
+          "isRequired": true
+        },
+        {
+          "name": "DOCMOST_PASSWORD",
+          "description": "Password of that Docmost account",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
