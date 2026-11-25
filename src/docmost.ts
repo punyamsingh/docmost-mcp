@@ -2,6 +2,13 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
+import {
+  LiveRefusedError,
+  LiveUnavailableError,
+  LiveUnconfirmedError,
+  openLiveDocument,
+  type LiveDocument,
+} from './collab.js';
 import type { DocmostConfig } from './config.js';
 
 const MAX_LIST_ITEMS = 1000;
@@ -85,7 +92,7 @@ const pageSchema = z.object({
     .nullish(),
 });
 
-type EditorNode = {
+export type EditorNode = {
   type: string;
   text?: string;
   attrs?: Record<string, unknown>;
@@ -106,10 +113,19 @@ const editorNodeSchema: z.ZodType<EditorNode> = z.lazy(() =>
 
 const editorPageSchema = z.object({
   id: z.string(),
+  slugId: z.string(),
   title: z.string().nullish(),
+  icon: z.string().nullish(),
+  spaceId: z.string(),
+  parentPageId: z.string().nullish(),
   updatedAt: z.string().nullish(),
   content: editorNodeSchema.nullish(),
 });
+
+type EditorPage = z.infer<typeof editorPageSchema>;
+
+const LIVE_SYNC_TIMEOUT_MS = 10_000;
+const LIVE_CONFIRM_TIMEOUT_MS = 5_000;
 
 const MARKDOWN_SAFE_NODES = new Set([
   'doc',
@@ -253,15 +269,35 @@ const replaceRange = (children: EditorNode[], start: number, end: number, newTex
 
 const BLOCK_SYNTAX_START = /^(?:#{1,6}(?:\s|$)|[-+]\s|-{3,}\s*$|>|\d{1,9}[.)]\s|```|~~~|\|)/;
 
-export type InPlaceEdit =
-  | { content: EditorNode; replacements: number }
-  | { ambiguousMatches: number }
-  | { reason: string };
+export type InPlaceMatch = { block: EditorNode; starts: number[]; length: number; replacement: string };
 
-export const editInPlace = (document: EditorNode, oldText: string, newText: string, replaceAll: boolean): InPlaceEdit => {
+type NotInPlace = { ambiguousMatches: number } | { reason: string };
+
+export type InPlacePlan = { matches: InPlaceMatch[]; replacements: number } | NotInPlace;
+
+export type InPlaceEdit = { content: EditorNode; replacements: number } | NotInPlace;
+
+export const visibleText = (document: EditorNode): string => {
+  const blocks: string[] = [];
+  const visit = (node: EditorNode) => {
+    if (TEXT_BLOCK_TYPES.has(node.type)) {
+      blocks.push((node.content ?? []).map((child) => inlineText(child, true)).join(''));
+      return;
+    }
+    node.content?.forEach(visit);
+  };
+  visit(document);
+  return blocks.join('\n');
+};
+
+export const planInPlaceEdit = (
+  document: EditorNode,
+  oldText: string,
+  newText: string,
+  replaceAll: boolean,
+): InPlacePlan => {
   const plainOldText = toPlainText(oldText);
   const plainNewText = toPlainText(newText);
-  const editedDocument = structuredClone(document);
   const matches: { block: EditorNode; starts: number[]; length: number; replacement: string | undefined }[] = [];
   let crossesMention = false;
   let crossesInlineNode = false;
@@ -301,7 +337,7 @@ export const editInPlace = (document: EditorNode, oldText: string, newText: stri
       matches.push({ block: node, starts, length: searchText.length, replacement });
     }
   };
-  visit(editedDocument);
+  visit(document);
 
   const replacements = matches.reduce((total, match) => total + match.starts.length, 0);
   if (crossesInlineNode) {
@@ -321,21 +357,36 @@ export const editInPlace = (document: EditorNode, oldText: string, newText: stri
   if (replacements > 1 && !replaceAll) {
     return { ambiguousMatches: replacements };
   }
-  for (const match of matches) {
-    const { replacement } = match;
+  const plannedMatches: InPlaceMatch[] = [];
+  for (const { replacement, ...match } of matches) {
     if (replacement === undefined) {
       return { reason: 'newText has Markdown formatting or a line break' };
     }
+    plannedMatches.push({ ...match, replacement });
+  }
+  return { matches: plannedMatches, replacements };
+};
+
+export const editInPlace = (document: EditorNode, oldText: string, newText: string, replaceAll: boolean): InPlaceEdit => {
+  const editedDocument = structuredClone(document);
+  const plan = planInPlaceEdit(editedDocument, oldText, newText, replaceAll);
+  if (!('matches' in plan)) {
+    return plan;
+  }
+  for (const match of plan.matches) {
     const children = [...match.starts]
       .reverse()
-      .reduce((current, start) => replaceRange(current, start, start + match.length, replacement), match.block.content ?? []);
+      .reduce(
+        (current, start) => replaceRange(current, start, start + match.length, match.replacement),
+        match.block.content ?? [],
+      );
     if (children.length > 0) {
       match.block.content = children;
     } else {
       delete match.block.content;
     }
   }
-  return { content: editedDocument, replacements };
+  return { content: editedDocument, replacements: plan.replacements };
 };
 
 export type DocmostSpace = z.infer<typeof spaceSchema>;
@@ -360,6 +411,14 @@ export type UpdatePageInput = {
   operation: ContentOperation;
   icon?: string;
   expectedUpdatedAt?: string;
+};
+
+export type EditPageResult = {
+  page: DocmostPage;
+  replacements: number;
+  editedInPlace: boolean;
+  liveMerge: boolean;
+  liveMergeSkipped?: string;
 };
 
 export type EditPageInput = {
@@ -588,6 +647,34 @@ export const createDocmostClient = (config: DocmostConfig) => {
     );
   };
 
+  const openLive = async (pageId: string): Promise<{ live: LiveDocument } | { skipped: string }> => {
+    let token: string;
+    try {
+      token = (await post('/auth/collab-token', {}, z.object({ token: z.string() }))).token;
+    } catch (error) {
+      return { skipped: `no live-editing token: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    try {
+      return { live: await openLiveDocument({ url: config.collabUrl, pageId, token, timeoutMs: LIVE_SYNC_TIMEOUT_MS }) };
+    } catch (error) {
+      if (error instanceof LiveUnavailableError) {
+        return { skipped: error.message };
+      }
+      if (error instanceof LiveRefusedError) {
+        throw new DocmostError(error.message);
+      }
+      throw error;
+    }
+  };
+
+  const refuseUnsavedTyping = (live: LiveDocument | undefined, page: EditorPage) => {
+    if (live !== undefined && visibleText(live.document) !== visibleText(page.content ?? { type: 'doc' })) {
+      throw new DocmostError(
+        `Refused: ${page.title ?? page.id} has unsaved edits from an open editor, which rewriting the body would delete. Docmost saves them within 45 seconds, so retry in a minute, or make a plain-text edit_page, which merges with them.`,
+      );
+    }
+  };
+
   const refuseLossyRewrite = (page: z.infer<typeof editorPageSchema>, inPlaceReason?: string) => {
     const lossyContent = page.content ? findMarkdownLossyContent(page.content) : [];
     if (lossyContent.length > 0) {
@@ -611,6 +698,14 @@ export const createDocmostClient = (config: DocmostConfig) => {
         );
       }
       refuseLossyRewrite(currentPage);
+      const attempt = await openLive(currentPage.id);
+      if ('live' in attempt) {
+        try {
+          refuseUnsavedTyping(attempt.live, currentPage);
+        } finally {
+          attempt.live.close();
+        }
+      }
     }
     const contentFields =
       input.markdown === undefined
@@ -625,19 +720,66 @@ export const createDocmostClient = (config: DocmostConfig) => {
     );
   };
 
-  const editPage = async (
-    input: EditPageInput,
-  ): Promise<{ page: DocmostPage; replacements: number; editedInPlace: boolean }> => {
+  const editPage = async (input: EditPageInput): Promise<EditPageResult> => {
     const oldText = input.oldText.replaceAll('\r\n', '\n');
     const newText = input.newText.replaceAll('\r\n', '\n');
     const editorPage = await post('/pages/info', { pageId: normalizePageReference(input.pageId) }, editorPageSchema);
+    const attempt = await openLive(editorPage.id);
+    const live = 'live' in attempt ? attempt.live : undefined;
+    const liveMergeSkipped = 'skipped' in attempt ? { liveMergeSkipped: attempt.skipped } : {};
+    try {
+      return live === undefined
+        ? { ...(await editSavedPage(editorPage, oldText, newText, input.replaceAll)), liveMerge: false, ...liveMergeSkipped }
+        : await editLivePage(live, editorPage, oldText, newText, input.replaceAll);
+    } finally {
+      live?.close();
+    }
+  };
+
+  const tooManyMatches = (count: number) =>
+    new DocmostError(`oldText appears ${count} times; include more surrounding text or set replaceAll.`);
+
+  const editLivePage = async (
+    live: LiveDocument,
+    editorPage: EditorPage,
+    oldText: string,
+    newText: string,
+    replaceAll: boolean,
+  ): Promise<EditPageResult> => {
+    const plan = planInPlaceEdit(live.document, oldText, newText, replaceAll);
+    if ('ambiguousMatches' in plan) {
+      throw tooManyMatches(plan.ambiguousMatches);
+    }
+    if ('reason' in plan) {
+      return { ...(await rewriteFromMarkdown(editorPage, oldText, newText, replaceAll, plan.reason, live)), liveMerge: false };
+    }
+    try {
+      live.transact(() => {
+        for (const match of plan.matches) {
+          for (const start of [...match.starts].reverse()) {
+            live.replace(match.block, start, start + match.length, match.replacement);
+          }
+        }
+      });
+      await live.confirm(LIVE_CONFIRM_TIMEOUT_MS);
+    } catch (error) {
+      throw error instanceof LiveUnconfirmedError ? new DocmostError(error.message) : error;
+    }
+    const { content: _content, ...pageFields } = editorPage;
+    return {
+      page: { ...pageFields, updatedAt: null, markdown: '' },
+      replacements: plan.replacements,
+      editedInPlace: true,
+      liveMerge: true,
+    };
+  };
+
+  const editSavedPage = async (editorPage: EditorPage, oldText: string, newText: string, replaceAll: boolean) => {
     const inPlace = editorPage.content
-      ? editInPlace(editorPage.content, oldText, newText, input.replaceAll)
+      ? editInPlace(editorPage.content, oldText, newText, replaceAll)
       : { reason: 'the page is empty' };
     if ('ambiguousMatches' in inPlace) {
-      throw new DocmostError(
-        `oldText appears ${inPlace.ambiguousMatches} times; include more surrounding text or set replaceAll.`,
-      );
+      throw tooManyMatches(inPlace.ambiguousMatches);
     }
     if ('content' in inPlace) {
       const page = toPage(
@@ -649,7 +791,17 @@ export const createDocmostClient = (config: DocmostConfig) => {
       );
       return { page, replacements: inPlace.replacements, editedInPlace: true };
     }
+    return rewriteFromMarkdown(editorPage, oldText, newText, replaceAll, inPlace.reason, undefined);
+  };
 
+  const rewriteFromMarkdown = async (
+    editorPage: EditorPage,
+    oldText: string,
+    newText: string,
+    replaceAll: boolean,
+    inPlaceReason: string,
+    live: LiveDocument | undefined,
+  ) => {
     const currentPage = await getPage(editorPage.id);
     const bodyParts = currentPage.markdown.split(oldText);
     const replacements = bodyParts.length - 1;
@@ -658,13 +810,12 @@ export const createDocmostClient = (config: DocmostConfig) => {
         `oldText not found in ${currentPage.title ?? currentPage.id}; re-read the page with get_page and copy the text exactly.`,
       );
     }
-    if (replacements > 1 && !input.replaceAll) {
-      throw new DocmostError(`oldText appears ${replacements} times; include more surrounding text or set replaceAll.`);
+    if (replacements > 1 && !replaceAll) {
+      throw tooManyMatches(replacements);
     }
-    refuseLossyRewrite(
-      await post('/pages/info', { pageId: editorPage.id }, editorPageSchema),
-      inPlace.reason,
-    );
+    const latestPage = await post('/pages/info', { pageId: editorPage.id }, editorPageSchema);
+    refuseLossyRewrite(latestPage, inPlaceReason);
+    refuseUnsavedTyping(live, latestPage);
     const page = toPage(
       await post(
         '/pages/update',

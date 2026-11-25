@@ -22,7 +22,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 
 - **Markdown in and out**: pages come back as Markdown and are written from Markdown.
 - **Safe edits**: an optional stale-write check stops a replace from overwriting someone else's newer change, and rewrites that would delete comments, mentions or diagrams are refused.
-- **Live collaboration**: changes go through Docmost's real-time layer, so people with the page open see them straight away (see [Limitations](#limitations) for recent unsaved typing).
+- **Live collaboration**: text edits are made in the live document, the way Docmost's own editor makes them, so they merge with whatever people with the page open are typing.
 - **Any page reference**: a page id, slug id or the URL copied from the browser.
 
 ## Tools
@@ -41,11 +41,11 @@ Every tool that takes a page accepts a page id, a slug id, or the page URL copie
 
 Pass the `updatedAt` from `get_page` as `expectedUpdatedAt` to `update_page`, and a replace is refused if someone changed the page in the meantime. `edit_page` reads the current body itself, so it applies on top of other people's changes as long as the text still matches exactly once.
 
-When `oldText` and `newText` are plain text and each match sits inside one paragraph, heading or code block, `edit_page` changes just that text in Docmost's editor data, so comments, mentions, colours and everything else on the page are kept. The new text takes the formatting of the text it replaces, as typing over a selection does in the editor. The result's `editedInPlace` says which way the edit went.
+When `oldText` and `newText` are plain text and each match sits inside one paragraph, heading or code block, `edit_page` changes just that text in the page's live document, over Docmost's collaboration websocket, the same connection Docmost's editor uses. The change merges with what anyone with the page open is typing, and comments, mentions, colours and everything else on the page are kept. The new text takes the formatting of the text it replaces, as typing over a selection does in the editor. Docmost saves the change within 45 seconds, so the result's `updatedAt` is `null`; `editedInPlace` and `liveMerge` say which way the edit went. If the websocket can't be reached within 10 seconds, the edit is written to the saved page instead and `liveMergeSkipped` says why.
 
 Otherwise, for example when the new text has Markdown formatting or the match crosses a line break or a mention, the edit rewrites the whole body from Markdown, as an `update_page` replace does. Content that Markdown cannot carry would be deleted, so the server refuses such a rewrite on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
 
-Content updates go through Docmost's real-time collaboration layer, so if someone has the page open while it is updated, their editor shows the change straight away.
+A whole-body rewrite can't be merged, so it is refused while someone with the page open has typing that Docmost hasn't saved yet; retry a minute later. Append and prepend are merged by Docmost, so they always go through.
 
 ## Requirements
 
@@ -126,6 +126,8 @@ claude mcp add docmost --scope user -- node "$PWD/build/index.js"
 
 `.env` is git-ignored. Variables set in the client's config take precedence over it.
 
+The server reaches Docmost's collaboration websocket at `DOCMOST_URL` + `/collab`. If your Docmost serves it elsewhere (its `COLLAB_URL` setting), set `DOCMOST_COLLAB_URL` to that address.
+
 `npm test` builds the server and runs the test suite against a fake Docmost, so it needs no Docmost instance.
 
 ## Limitations
@@ -133,7 +135,8 @@ claude mcp add docmost --scope user -- node "$PWD/build/index.js"
 - Uploading local image files is not supported yet; reference images that are already hosted somewhere by URL.
 - No tools for deleting or moving pages, comments, or permissions.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
-- Docmost saves what people type 10 to 45 seconds after they type it, and `edit_page` and an `update_page` replace build on the last saved version. So if someone has the page open, text they typed in that window can be lost. Append and prepend are not affected.
+- When the collaboration websocket can't be reached, `edit_page` falls back to writing the saved page. Docmost saves what people type 10 to 45 seconds after they type it, so in that case text typed in that window by someone with the page open can be lost.
+- Before a whole-body rewrite the server compares the live text with the saved text, not formatting, so bold or colour added in the last 45 seconds without typing can still be lost by a rewrite.
 
 ## License
 
