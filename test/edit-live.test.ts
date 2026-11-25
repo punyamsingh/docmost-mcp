@@ -91,10 +91,13 @@ for (const [label, mode] of fallbackCases) {
     if (mode !== 'closedPort') {
       docmost.setCollabMode(mode);
     }
+    const started = Date.now();
     const summary = summaryOf(await server.call('edit_page', { pageId: 'p1', oldText: 'Monday', newText: 'Tuesday' }));
+    assert.ok(Date.now() - started < 5000, `fell back after ${Date.now() - started} ms, not straight away`);
     assert.equal(summary.liveMerge, false);
-    assert.match(summary.liveMergeSkipped, /live-editing connection closed/);
+    assert.match(summary.liveMergeSkipped, /live-editing connection (closed|could not be opened)/);
     assert.deepEqual(docmost.writes().map((write) => write.body.format), ['json']);
+    assert.ok(docmost.upgradePaths.length <= 1, `${docmost.upgradePaths.length} connection attempts`);
   });
 }
 

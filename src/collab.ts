@@ -1,4 +1,4 @@
-import { HocuspocusProvider } from '@hocuspocus/provider';
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 import type { EditorNode } from './docmost.js';
 
@@ -66,7 +66,7 @@ const attributesAt = (text: Y.XmlText, index: number): Record<string, unknown> =
   return {};
 };
 
-const createLiveDocument = (provider: HocuspocusProvider, ydoc: Y.Doc): LiveDocument => {
+const createLiveDocument = (provider: HocuspocusProvider, ydoc: Y.Doc, destroy: () => void): LiveDocument => {
   const blocks = new Map<EditorNode, Y.XmlElement>();
   const fragment = ydoc.getXmlFragment('default');
   const content = fragment
@@ -125,10 +125,7 @@ const createLiveDocument = (provider: HocuspocusProvider, ydoc: Y.Doc): LiveDocu
     replace,
     transact: (change) => ydoc.transact(change),
     confirm,
-    close: () => {
-      provider.destroy();
-      ydoc.destroy();
-    },
+    close: destroy,
   };
 };
 
@@ -142,16 +139,25 @@ export const openLiveDocument = (options: { url: string; pageId: string; token: 
       }
       settled = true;
       clearTimeout(timer);
-      provider.destroy();
-      ydoc.destroy();
+      destroy();
       reject(error);
     };
     const timer = setTimeout(
       () => fail(new LiveUnavailableError(`the live-editing connection did not sync within ${options.timeoutMs / 1000} s`)),
       options.timeoutMs,
     );
-    const provider = new HocuspocusProvider({
+    const socket = new HocuspocusProviderWebsocket({
       url: options.url,
+      maxAttempts: 1,
+      onMaxAttemptsFailed: () => fail(new LiveUnavailableError('the live-editing connection could not be opened')),
+    });
+    const destroy = () => {
+      provider.destroy();
+      socket.destroy();
+      ydoc.destroy();
+    };
+    const provider = new HocuspocusProvider({
+      websocketProvider: socket,
       name: `page.${options.pageId}`,
       document: ydoc,
       token: options.token,
@@ -169,7 +175,8 @@ export const openLiveDocument = (options: { url: string; pageId: string; token: 
         }
         settled = true;
         clearTimeout(timer);
-        resolve(createLiveDocument(provider, ydoc));
+        resolve(createLiveDocument(provider, ydoc, destroy));
       },
     });
+    provider.attach();
   });
