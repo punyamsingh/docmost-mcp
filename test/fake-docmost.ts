@@ -34,6 +34,14 @@ const paragraphsFrom = (markdown: string): EditorNode[] =>
     .filter((block) => block !== '')
     .map((block) => ({ type: 'paragraph', content: [{ type: 'text', text: block }] }));
 
+export const text = (value: string, marks?: EditorMark[]): EditorNode => ({
+  type: 'text',
+  text: value,
+  ...(marks ? { marks } : {}),
+});
+export const paragraph = (...content: EditorNode[]): EditorNode => ({ type: 'paragraph', content });
+export const doc = (...content: EditorNode[]): EditorNode => ({ type: 'doc', content });
+
 export const makePage = (fields: Partial<FakePage> & { id: string }): FakePage => ({
   slugId: `S${fields.id}`,
   title: `Page ${fields.id}`,
@@ -48,12 +56,15 @@ export const makePage = (fields: Partial<FakePage> & { id: string }): FakePage =
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const isEditorNode = (value: unknown): value is EditorNode => isRecord(value) && typeof value.type === 'string';
+
 export const startFakeDocmost = async (initialPages: FakePage[]) => {
   const pages = initialPages.map((page) => structuredClone(page));
   const requests: FakeRequest[] = [];
   const validTokens = new Set<string>();
   let loginCount = 0;
   let clock = Date.parse(START_TIME);
+  let updateRejection: { status: number; message: string } | undefined;
 
   const findPage = (reference: unknown) => pages.find((page) => page.id === reference || page.slugId === reference);
 
@@ -70,6 +81,10 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
   const applyUpdate = (page: FakePage, body: Record<string, unknown>) => {
     if (typeof body.title === 'string') {
       page.title = body.title;
+    }
+    if (body.format === 'json' && isEditorNode(body.content)) {
+      page.json = body.content;
+      return;
     }
     if (typeof body.content !== 'string') {
       return;
@@ -142,6 +157,10 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
       return;
     }
     if (endpoint === '/pages/update') {
+      if (updateRejection !== undefined) {
+        send(response, updateRejection.status, { message: updateRejection.message });
+        return;
+      }
       applyUpdate(page, body);
       touch(page);
       send(response, 200, { data: pageInfo(page, body.format) });
@@ -176,6 +195,9 @@ export const startFakeDocmost = async (initialPages: FakePage[]) => {
     writes: () => requests.filter((entry) => entry.endpoint === '/pages/update'),
     loginCount: () => loginCount,
     revokeTokens: () => validTokens.clear(),
+    rejectUpdates: (status: number, message: string) => {
+      updateRejection = { status, message };
+    },
     page: (reference: string) => findPage(reference),
     close: () =>
       new Promise<void>((resolve) => {

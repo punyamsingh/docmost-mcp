@@ -34,13 +34,15 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
-| `edit_page` | Replaces an exact piece of text in a page body by rewriting the body with the change |
+| `edit_page` | Replaces an exact piece of text in a page, in place when it is plain text, leaving the rest of the page as it is |
 
 Every tool that takes a page accepts a page id, a slug id, or the page URL copied from the browser.
 
 Pass the `updatedAt` from `get_page` as `expectedUpdatedAt` to `update_page`, and a replace is refused if someone changed the page in the meantime. `edit_page` reads the current body itself, so it applies on top of other people's changes as long as the text still matches exactly once.
 
-A replace, and so every `edit_page`, rewrites the whole body from Markdown. Content that Markdown cannot carry would be deleted, so the server refuses a replace on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
+When `oldText` and `newText` are plain text and each match sits inside one paragraph, heading or code block, `edit_page` changes just that text in Docmost's editor data, so comments, mentions, colours and everything else on the page are kept. The new text takes the formatting of the text it replaces, as typing over a selection does in the editor. The result's `editedInPlace` says which way the edit went.
+
+Otherwise, for example when the new text has Markdown formatting or the match crosses a line break or a mention, the edit rewrites the whole body from Markdown, as an `update_page` replace does. Content that Markdown cannot carry would be deleted, so the server refuses such a rewrite on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
 
 Content updates go through Docmost's real-time collaboration layer, so if someone has the page open while it is updated, their editor picks up the change instead of overwriting it.
 

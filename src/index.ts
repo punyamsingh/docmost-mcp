@@ -69,7 +69,7 @@ const pageReferenceSchema = z
 const readOnlyAnnotations = { readOnlyHint: true, openWorldHint: true };
 
 const server = new McpServer(
-  { name: 'docmost', version: '0.2.1' },
+  { name: 'docmost', version: '0.3.0' },
   {
     instructions:
       'Docmost wiki access. Every page argument accepts a page id, slug id or page URL. Read a page with get_page before changing it. For small changes use edit_page with text copied exactly from get_page output. For whole-body rewrites use update_page with operation replace and pass the updatedAt from your read as expectedUpdatedAt. Markdown bodies must not repeat the page title as a leading # heading.',
@@ -243,7 +243,7 @@ server.registerTool(
   {
     title: 'Edit a Docmost page',
     description:
-      'Replaces an exact piece of text in a page body with new Markdown by rewriting the whole body, and is refused on pages holding content Markdown cannot carry, such as mentions or comments.',
+      'Replaces an exact piece of text in a page, changing plain text in place so comments, mentions and formatting elsewhere are kept, and rewriting the whole body from Markdown only when the change needs Markdown, which is refused on pages holding content Markdown cannot carry.',
     inputSchema: {
       pageId: pageReferenceSchema,
       oldText: z.string().min(1).describe('Exact text to replace, copied from get_page output; must match once unless replaceAll is set.'),
@@ -254,13 +254,13 @@ server.registerTool(
   },
   ({ pageId, oldText, newText, replaceAll }) =>
     runTool(async (client) => {
-      const { page, replacements } = await client.editPage({
+      const { page, replacements, editedInPlace } = await client.editPage({
         pageId,
         oldText,
         newText,
         replaceAll: replaceAll ?? false,
       });
-      return toJson({ ...summarizePage(client, page), replacements });
+      return toJson({ ...summarizePage(client, page), replacements, editedInPlace });
     }),
 );
 

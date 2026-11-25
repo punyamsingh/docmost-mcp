@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { DocmostConfig } from './config.js';
 
@@ -86,16 +87,19 @@ const pageSchema = z.object({
 
 type EditorNode = {
   type: string;
+  text?: string;
   attrs?: Record<string, unknown>;
-  marks?: { type: string }[];
+  marks?: { type: string; [field: string]: unknown }[];
   content?: EditorNode[];
+  [field: string]: unknown;
 };
 
 const editorNodeSchema: z.ZodType<EditorNode> = z.lazy(() =>
-  z.object({
+  z.looseObject({
     type: z.string(),
+    text: z.string().optional(),
     attrs: z.record(z.string(), z.unknown()).optional(),
-    marks: z.array(z.object({ type: z.string() })).optional(),
+    marks: z.array(z.looseObject({ type: z.string() })).optional(),
     content: z.array(editorNodeSchema).optional(),
   }),
 );
@@ -156,6 +160,157 @@ export const findMarkdownLossyContent = (root: EditorNode): string[] => {
   };
   visit(root);
   return [...lossyContent];
+};
+
+const TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading', 'codeBlock', 'detailsSummary']);
+const INLINE_NODE_PLACEHOLDER = '￼';
+const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
+
+const isWordCharacter = (character: string | undefined): boolean =>
+  character !== undefined && /[\p{L}\p{N}]/u.test(character);
+
+const toPlainText = (markdown: string): string | undefined => {
+  let plainText = '';
+  for (let index = 0; index < markdown.length; index++) {
+    const character = markdown.charAt(index);
+    const nextCharacter = markdown[index + 1];
+    if (character === '\\' && nextCharacter !== undefined && ASCII_PUNCTUATION.test(nextCharacter)) {
+      plainText += nextCharacter;
+      index++;
+      continue;
+    }
+    const isFormatting =
+      '*`[]$<\n'.includes(character) ||
+      ((character === '~' || character === '=') && nextCharacter === character) ||
+      (character === '_' && (!isWordCharacter(markdown[index - 1]) || !isWordCharacter(nextCharacter)));
+    if (isFormatting) {
+      return undefined;
+    }
+    plainText += character;
+  }
+  return plainText;
+};
+
+const inlineText = (node: EditorNode, showMentions: boolean): string => {
+  if (node.type === 'text') {
+    return node.text ?? '';
+  }
+  if (showMentions && node.type === 'mention') {
+    const label = typeof node.attrs?.label === 'string' ? node.attrs.label : '';
+    return node.attrs?.entityType === 'user' ? `@${label}` : label;
+  }
+  return INLINE_NODE_PLACEHOLDER;
+};
+
+const findAll = (text: string, searchText: string): number[] => {
+  const starts: number[] = [];
+  for (let at = text.indexOf(searchText); at >= 0; at = text.indexOf(searchText, at + searchText.length)) {
+    starts.push(at);
+  }
+  return starts;
+};
+
+const mergeTextNodes = (nodes: EditorNode[]): EditorNode[] =>
+  nodes.reduce<EditorNode[]>((merged, node) => {
+    const previous = merged.at(-1);
+    if (
+      previous?.type === 'text' &&
+      node.type === 'text' &&
+      isDeepStrictEqual({ ...previous, text: '' }, { ...node, text: '' })
+    ) {
+      merged[merged.length - 1] = { ...previous, text: `${previous.text ?? ''}${node.text ?? ''}` };
+    } else {
+      merged.push(node);
+    }
+    return merged;
+  }, []);
+
+const replaceRange = (children: EditorNode[], start: number, end: number, newText: string): EditorNode[] => {
+  const result: EditorNode[] = [];
+  let offset = 0;
+  let inserted = false;
+  for (const child of children) {
+    const childStart = offset;
+    offset += inlineText(child, false).length;
+    if (offset <= start || childStart >= end) {
+      result.push(child);
+      continue;
+    }
+    const text = child.text ?? '';
+    if (childStart < start) {
+      result.push({ ...child, text: text.slice(0, start - childStart) });
+    }
+    if (!inserted && newText !== '') {
+      result.push({ ...child, text: newText });
+    }
+    inserted = true;
+    if (offset > end) {
+      result.push({ ...child, text: text.slice(end - childStart) });
+    }
+  }
+  return mergeTextNodes(result);
+};
+
+export type InPlaceEdit = { content: EditorNode; replacements: number } | { reason: string };
+
+export const editInPlace = (document: EditorNode, oldText: string, newText: string, replaceAll: boolean): InPlaceEdit => {
+  const plainOldText = toPlainText(oldText);
+  const plainNewText = toPlainText(newText);
+  const editedDocument = structuredClone(document);
+  const matches: { block: EditorNode; starts: number[]; length: number; replacement: string | undefined }[] = [];
+  let crossesMention = false;
+
+  const visit = (node: EditorNode) => {
+    if (!TEXT_BLOCK_TYPES.has(node.type)) {
+      node.content?.forEach(visit);
+      return;
+    }
+    const isCode = node.type === 'codeBlock';
+    const searchText = isCode ? oldText : plainOldText;
+    if (!searchText) {
+      return;
+    }
+    const children = node.content ?? [];
+    const starts = findAll(children.map((child) => inlineText(child, false)).join(''), searchText);
+    if (!isCode && findAll(children.map((child) => inlineText(child, true)).join(''), searchText).length > starts.length) {
+      crossesMention = true;
+    }
+    if (starts.length > 0) {
+      matches.push({ block: node, starts, length: searchText.length, replacement: isCode ? newText : plainNewText });
+    }
+  };
+  visit(editedDocument);
+
+  const replacements = matches.reduce((total, match) => total + match.starts.length, 0);
+  if (crossesMention) {
+    return { reason: 'oldText crosses a mention' };
+  }
+  if (replacements === 0) {
+    return {
+      reason:
+        plainOldText === undefined
+          ? 'oldText has Markdown formatting or spans more than one line'
+          : 'oldText was not found within a single paragraph, heading or code block',
+    };
+  }
+  if (replacements > 1 && !replaceAll) {
+    return { reason: `oldText appears ${replacements} times in the page text` };
+  }
+  for (const match of matches) {
+    const { replacement } = match;
+    if (replacement === undefined) {
+      return { reason: 'newText has Markdown formatting or a line break' };
+    }
+    const children = [...match.starts]
+      .reverse()
+      .reduce((current, start) => replaceRange(current, start, start + match.length, replacement), match.block.content ?? []);
+    if (children.length > 0) {
+      match.block.content = children;
+    } else {
+      delete match.block.content;
+    }
+  }
+  return { content: editedDocument, replacements };
 };
 
 export type DocmostSpace = z.infer<typeof spaceSchema>;
@@ -408,6 +563,16 @@ export const createDocmostClient = (config: DocmostConfig) => {
     );
   };
 
+  const refuseLossyRewrite = (page: z.infer<typeof editorPageSchema>, inPlaceReason?: string) => {
+    const lossyContent = page.content ? findMarkdownLossyContent(page.content) : [];
+    if (lossyContent.length > 0) {
+      const inPlaceNote = inPlaceReason === undefined ? '' : ` It couldn't be edited in place because ${inPlaceReason}.`;
+      throw new DocmostError(
+        `Refused: ${page.title ?? page.id} holds content Markdown cannot carry (${lossyContent.join(', ')}), which rewriting the body would delete.${inPlaceNote} Use append or prepend, or edit it in Docmost.`,
+      );
+    }
+  };
+
   const updatePage = async (input: UpdatePageInput): Promise<DocmostPage> => {
     if (input.markdown !== undefined && input.operation === 'replace') {
       const expectedTime = input.expectedUpdatedAt === undefined ? undefined : Date.parse(input.expectedUpdatedAt);
@@ -420,12 +585,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
           `Page changed at ${currentPage.updatedAt ?? 'an unknown time'} (you read ${input.expectedUpdatedAt}); re-read it with get_page before replacing.`,
         );
       }
-      const lossyContent = currentPage.content ? findMarkdownLossyContent(currentPage.content) : [];
-      if (lossyContent.length > 0) {
-        throw new DocmostError(
-          `Refused: ${currentPage.title ?? currentPage.id} holds content Markdown cannot carry (${lossyContent.join(', ')}), which rewriting the body would delete. Use append or prepend, or edit it in Docmost.`,
-        );
-      }
+      refuseLossyRewrite(currentPage);
     }
     const contentFields =
       input.markdown === undefined
@@ -440,9 +600,27 @@ export const createDocmostClient = (config: DocmostConfig) => {
     );
   };
 
-  const editPage = async (input: EditPageInput): Promise<{ page: DocmostPage; replacements: number }> => {
-    const currentPage = await getPage(input.pageId);
+  const editPage = async (
+    input: EditPageInput,
+  ): Promise<{ page: DocmostPage; replacements: number; editedInPlace: boolean }> => {
     const oldText = input.oldText.replaceAll('\r\n', '\n');
+    const newText = input.newText.replaceAll('\r\n', '\n');
+    const editorPage = await post('/pages/info', { pageId: normalizePageReference(input.pageId) }, editorPageSchema);
+    const inPlace = editorPage.content
+      ? editInPlace(editorPage.content, oldText, newText, input.replaceAll)
+      : { reason: 'the page is empty' };
+    if ('content' in inPlace) {
+      const page = toPage(
+        await post(
+          '/pages/update',
+          { pageId: editorPage.id, content: inPlace.content, operation: 'replace', format: 'json' },
+          pageSchema,
+        ),
+      );
+      return { page, replacements: inPlace.replacements, editedInPlace: true };
+    }
+
+    const currentPage = await getPage(editorPage.id);
     const bodyParts = currentPage.markdown.split(oldText);
     const replacements = bodyParts.length - 1;
     if (replacements === 0) {
@@ -453,12 +631,15 @@ export const createDocmostClient = (config: DocmostConfig) => {
     if (replacements > 1 && !input.replaceAll) {
       throw new DocmostError(`oldText appears ${replacements} times; include more surrounding text or set replaceAll.`);
     }
-    const page = await updatePage({
-      pageId: currentPage.id,
-      markdown: bodyParts.join(input.newText.replaceAll('\r\n', '\n')),
-      operation: 'replace',
-    });
-    return { page, replacements };
+    refuseLossyRewrite(editorPage, inPlace.reason);
+    const page = toPage(
+      await post(
+        '/pages/update',
+        { pageId: editorPage.id, content: bodyParts.join(newText), operation: 'replace', format: 'markdown' },
+        pageSchema,
+      ),
+    );
+    return { page, replacements, editedInPlace: false };
   };
 
   return { pageUrl, listSpaces, listChildPages, searchPages, getPage, createPage, updatePage, editPage };
