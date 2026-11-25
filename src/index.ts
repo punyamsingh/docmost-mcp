@@ -71,10 +71,10 @@ const pageReferenceSchema = z
 const readOnlyAnnotations = { readOnlyHint: true, openWorldHint: true };
 
 const server = new McpServer(
-  { name: 'docmost', version: '0.4.0' },
+  { name: 'docmost', version: '0.5.0' },
   {
     instructions:
-      'Docmost wiki access. Every page argument accepts a page id, slug id or page URL. Read a page with get_page before changing it. For small changes use edit_page with text copied exactly from get_page output. For whole-body rewrites use update_page with operation replace and pass the updatedAt from your read as expectedUpdatedAt. Markdown bodies must not repeat the page title as a leading # heading.',
+      'Docmost wiki access. Every page argument accepts a page id, slug id or page URL. Read a page with get_page before changing it. For small changes use edit_page with text copied exactly from get_page output. For whole-body rewrites use update_page with operation replace and pass the updatedAt from your read as expectedUpdatedAt. Markdown bodies must not repeat the page title as a leading # heading. To comment on a sentence, pass add_comment a quote copied from get_page.',
   },
 );
 
@@ -264,6 +264,111 @@ server.registerTool(
       });
       return toJson({ ...summarizePage(client, page), ...result });
     }),
+);
+
+const commentIdSchema = z.string().min(1).describe('Comment id from list_comments.');
+
+const commentTextSchema = z
+  .string()
+  .min(1)
+  .describe('Plain-text comment; blank lines start new paragraphs, and @[Full Name] mentions a member, which notifies them.');
+
+const commentWriteAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+
+server.registerTool(
+  'list_comments',
+  {
+    title: 'List Docmost comments',
+    description: 'Lists the comment threads on a page with their replies, authors, text and the quoted text each one is attached to.',
+    inputSchema: {
+      pageId: pageReferenceSchema,
+      includeResolved: z.boolean().optional().describe('Include resolved threads too; defaults to false.'),
+    },
+    annotations: readOnlyAnnotations,
+  },
+  ({ pageId, includeResolved }) =>
+    runTool(async (client) => toJson({ threads: await client.listComments(pageId, includeResolved ?? false) })),
+);
+
+server.registerTool(
+  'add_comment',
+  {
+    title: 'Add a Docmost comment',
+    description: 'Posts a comment on a page, attached to a quoted piece of text when quote is given, and notifies the people it mentions.',
+    inputSchema: {
+      pageId: pageReferenceSchema,
+      text: commentTextSchema,
+      quote: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Exact text to attach the comment to, copied from get_page; must appear once inside one paragraph or heading.'),
+    },
+    annotations: commentWriteAnnotations,
+  },
+  ({ pageId, text, quote }) =>
+    runTool(async (client) => {
+      const { comment, ...anchoring } = await client.addComment({ pageId, text, quote });
+      return toJson({ id: comment.id, pageId: comment.pageId, type: comment.type ?? (quote ? 'inline' : 'page'), ...anchoring });
+    }),
+);
+
+server.registerTool(
+  'reply_to_comment',
+  {
+    title: 'Reply to a Docmost comment',
+    description: "Replies in a comment's thread, posting under the thread's top comment when given a reply's id.",
+    inputSchema: { commentId: commentIdSchema, text: commentTextSchema },
+    annotations: commentWriteAnnotations,
+  },
+  ({ commentId, text }) =>
+    runTool(async (client) => {
+      const { reply, threadId, postedToThread } = await client.replyToComment(commentId, text);
+      return toJson({ id: reply.id, threadId, ...(postedToThread ? { note: `Posted in thread ${threadId}, since replies are one level deep.` } : {}) });
+    }),
+);
+
+server.registerTool(
+  'edit_comment',
+  {
+    title: 'Edit a Docmost comment',
+    description: "Replaces the text of one of this account's own comments.",
+    inputSchema: { commentId: commentIdSchema, text: commentTextSchema },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  },
+  ({ commentId, text }) => runTool(async (client) => toJson(await client.editComment(commentId, text))),
+);
+
+server.registerTool(
+  'delete_comment',
+  {
+    title: 'Delete a Docmost comment',
+    description: 'Permanently deletes a comment and removes its highlight from the page, deleting a whole thread only when deleteReplies is set.',
+    inputSchema: {
+      commentId: commentIdSchema,
+      deleteReplies: z
+        .boolean()
+        .optional()
+        .describe("Also delete the comment's replies, which Docmost requires for a thread's top comment; defaults to false."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+  ({ commentId, deleteReplies }) =>
+    runTool(async (client) => toJson(await client.deleteComment(commentId, deleteReplies ?? false))),
+);
+
+server.registerTool(
+  'resolve_comment',
+  {
+    title: 'Resolve a Docmost comment thread',
+    description: "Resolves or reopens a comment thread by its top comment's id, on Docmost instances whose licence includes resolving.",
+    inputSchema: {
+      commentId: commentIdSchema,
+      resolved: z.boolean().optional().describe('false reopens the thread; defaults to true.'),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  ({ commentId, resolved }) => runTool(async (client) => toJson(await client.resolveComment(commentId, resolved ?? true))),
 );
 
 await server.connect(new StdioServerTransport());
