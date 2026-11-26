@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 export type DocmostConfig = {
   baseUrl: string;
@@ -18,10 +20,14 @@ const envFilePath = join(packageRoot, '.env');
 
 const cacheDirectory = join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'docmost-mcp');
 
-export const loadConfig = (): DocmostConfig => {
+const loadEnvFile = () => {
   if (existsSync(envFilePath)) {
     process.loadEnvFile(envFilePath);
   }
+};
+
+export const loadConfig = (): DocmostConfig => {
+  loadEnvFile();
 
   const missingVariables = ['DOCMOST_URL', 'DOCMOST_EMAIL', 'DOCMOST_PASSWORD'].filter(
     (variableName) => !process.env[variableName],
@@ -45,4 +51,36 @@ export const loadConfig = (): DocmostConfig => {
     sessionFile: join(cacheDirectory, `session-${accountKey}.json`),
     collabUrl: collabUrl.toString(),
   };
+};
+
+export type HttpConfig = {
+  host: string;
+  port: number;
+  token: string | undefined;
+};
+
+export const isLoopbackHost = (host: string) =>
+  host === 'localhost' || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'));
+
+export const loadHttpConfig = (args: string[]): HttpConfig | undefined => {
+  loadEnvFile();
+  const { values } = parseArgs({
+    args,
+    options: { http: { type: 'boolean' }, port: { type: 'string' }, host: { type: 'string' } },
+  });
+  const portText = values.port ?? process.env.DOCMOST_MCP_PORT;
+  if (!values.http && portText === undefined) {
+    return undefined;
+  }
+
+  const port = Number(portText ?? '3000');
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`Invalid port ${portText}; pass --port or DOCMOST_MCP_PORT as a number from 0 to 65535.`);
+  }
+  const host = values.host ?? (process.env.DOCMOST_MCP_HOST || '127.0.0.1');
+  const token = process.env.DOCMOST_MCP_TOKEN || undefined;
+  if (!isLoopbackHost(host) && token === undefined) {
+    throw new Error(`Set DOCMOST_MCP_TOKEN to serve on ${host}; without a token the server only binds to loopback.`);
+  }
+  return { host, port, token };
 };
