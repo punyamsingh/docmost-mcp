@@ -22,6 +22,8 @@ export type FakePage = {
   markdown: string;
   json: EditorNode | null;
   textPieces?: 'run' | 'node';
+  position?: string;
+  deletedAt?: string | null;
 };
 
 export type FakeMember = { id: string; name: string };
@@ -262,6 +264,11 @@ export const startFakeDocmost = async (
     content: format === 'markdown' ? markdown : json,
   });
 
+  const subtree = (root: FakePage): FakePage[] => [
+    root,
+    ...pages.filter((page) => page.parentPageId === root.id).flatMap(subtree),
+  ];
+
   const cursorPage = <Item>(items: Item[], body: Record<string, unknown>, fixedLimit?: number) => {
     const limit = fixedLimit ?? (typeof body.limit === 'number' ? body.limit : 20);
     const start = typeof body.cursor === 'string' ? Number(body.cursor) : 0;
@@ -278,7 +285,8 @@ export const startFakeDocmost = async (
     title: page.title,
     spaceId: page.spaceId,
     parentPageId: page.parentPageId,
-    hasChildren: pages.some((child) => child.parentPageId === page.id),
+    hasChildren: pages.some((child) => !child.deletedAt && child.parentPageId === page.id),
+    position: page.position,
     ...(options.sidebarWithoutUpdatedAt ? {} : { updatedAt: page.updatedAt }),
   });
 
@@ -574,7 +582,7 @@ export const startFakeDocmost = async (
     if (endpoint === '/pages/sidebar-pages' && body.pageId === undefined) {
       send(response, 200, {
         data: cursorPage(
-          pages.filter((page) => page.spaceId === body.spaceId && page.parentPageId === null).map(sidebarView),
+          pages.filter((page) => !page.deletedAt && page.spaceId === body.spaceId && page.parentPageId === null).map(sidebarView),
           body,
           options.sidebarPageSize,
         ),
@@ -622,7 +630,7 @@ export const startFakeDocmost = async (
     if (endpoint === '/pages/sidebar-pages') {
       send(response, 200, {
         data: cursorPage(
-          pages.filter((child) => child.parentPageId === page.id).map(sidebarView),
+          pages.filter((child) => !child.deletedAt && child.parentPageId === page.id).map(sidebarView),
           body,
           options.sidebarPageSize,
         ),
@@ -631,6 +639,61 @@ export const startFakeDocmost = async (
     }
     if (endpoint === '/pages/info') {
       send(response, 200, { data: pageInfo(page, body.format) });
+      return;
+    }
+    if (endpoint === '/pages/move') {
+      const position = typeof body.position === 'string' ? body.position : '';
+      if (position.length < 5 || position.length > 12) {
+        send(response, 400, { message: ['position must be between 5 and 12 characters'] });
+        return;
+      }
+      const parent = body.parentPageId === null ? undefined : findPage(body.parentPageId);
+      if (body.parentPageId !== null && (parent === undefined || parent.deletedAt || parent.spaceId !== page.spaceId)) {
+        send(response, 404, { message: 'Parent page not found' });
+        return;
+      }
+      if (parent !== undefined && subtree(page).includes(parent)) {
+        send(response, 400, { message: 'A page cannot be moved under its descendant' });
+        return;
+      }
+      page.parentPageId = parent?.id ?? null;
+      page.position = position;
+      send(response, 200, { success: true, status: 200 });
+      return;
+    }
+    if (endpoint === '/pages/move-to-space') {
+      if (typeof body.spaceId !== 'string' || body.spaceId === page.spaceId) {
+        send(response, 400, { message: 'Page is already in this space' });
+        return;
+      }
+      for (const movedPage of subtree(page)) {
+        movedPage.spaceId = body.spaceId;
+      }
+      page.parentPageId = null;
+      send(response, 200, { success: true, status: 200 });
+      return;
+    }
+    if (endpoint === '/pages/delete') {
+      if (body.permanentlyDelete === true) {
+        send(response, 403, { message: 'Only space admins can permanently delete pages' });
+        return;
+      }
+      clock += 1000;
+      for (const trashedPage of subtree(page).filter((candidate) => !candidate.deletedAt)) {
+        trashedPage.deletedAt = new Date(clock).toISOString();
+      }
+      send(response, 200, { success: true, status: 200 });
+      return;
+    }
+    if (endpoint === '/pages/restore') {
+      const parent = findPage(page.parentPageId);
+      if (parent?.deletedAt) {
+        page.parentPageId = null;
+      }
+      for (const restoredPage of subtree(page)) {
+        restoredPage.deletedAt = null;
+      }
+      send(response, 200, { data: pageInfo(page, undefined) });
       return;
     }
     if (endpoint === '/pages/update') {
