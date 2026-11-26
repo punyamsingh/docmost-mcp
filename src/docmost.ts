@@ -132,6 +132,29 @@ type EditorPage = z.infer<typeof editorPageSchema>;
 
 const memberSchema = z.object({ id: z.string(), name: z.string().nullish() });
 
+const revisionSchema = z.object({
+  id: z.string(),
+  pageId: z.string(),
+  slugId: z.string().nullish(),
+  title: z.string().nullish(),
+  createdAt: z.string(),
+  lastUpdatedBy: memberSchema.nullish(),
+  contributors: z.array(memberSchema).nullish(),
+});
+
+const revisionContentSchema = revisionSchema.extend({ content: editorNodeSchema.nullish() });
+
+const recentPageSchema = z.object({
+  id: z.string(),
+  slugId: z.string(),
+  title: z.string().nullish(),
+  spaceId: z.string(),
+  parentPageId: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+  space: z.object({ name: z.string().nullish() }).nullish(),
+  lastUpdatedBy: memberSchema.nullish(),
+});
+
 const commentSchema = z.object({
   id: z.string(),
   pageId: z.string(),
@@ -484,6 +507,154 @@ const inlineCommentText = (node: EditorNode): string => {
 export const commentText = (content: unknown): string =>
   (parseCommentContent(content)?.content ?? []).map(inlineCommentText).join('\n\n');
 
+const MARKDOWN_ESCAPES: [RegExp, string][] = [
+  [/\\/g, '\\\\'],
+  [/\*/g, '\\*'],
+  [/^-/g, '\\-'],
+  [/^\+ /g, '\\+ '],
+  [/^(=+)/g, '\\$1'],
+  [/^(#{1,6}) /g, '\\$1 '],
+  [/`/g, '\\`'],
+  [/^~~~/g, '\\~~~'],
+  [/\[/g, '\\['],
+  [/\]/g, '\\]'],
+  [/^>/g, '\\>'],
+  [/_/g, '\\_'],
+  [/^(\d+)\. /g, '$1\\. '],
+];
+
+const MARK_DELIMITERS = new Map([
+  ['bold', '**'],
+  ['italic', '_'],
+  ['strike', '~~'],
+  ['code', '`'],
+]);
+
+const linkMarkSchema = z.looseObject({ href: z.string() });
+
+const stringAttr = (node: EditorNode, name: string): string => {
+  const value = node.attrs?.[name];
+  return typeof value === 'string' ? value : '';
+};
+
+const inlineMarkdown = (nodes: EditorNode[]): string =>
+  nodes
+    .map((node) => {
+      if (node.type === 'hardBreak') {
+        return '  \n';
+      }
+      if (node.type === 'mention') {
+        return inlineText(node, true);
+      }
+      if (node.type === 'mathInline') {
+        return `$${stringAttr(node, 'text')}$`;
+      }
+      if (node.type !== 'text') {
+        return inlineMarkdown(node.content ?? []);
+      }
+      const isCode = node.marks?.some((mark) => mark.type === 'code') ?? false;
+      let value = isCode
+        ? (node.text ?? '')
+        : MARKDOWN_ESCAPES.reduce((escaped, [pattern, replacement]) => escaped.replace(pattern, replacement), node.text ?? '');
+      for (const mark of node.marks ?? []) {
+        const delimiter = MARK_DELIMITERS.get(mark.type);
+        const href = mark.type === 'link' ? linkMarkSchema.safeParse(mark.attrs).data?.href : undefined;
+        if (delimiter !== undefined) {
+          value = `${delimiter}${value}${delimiter}`;
+        } else if (href !== undefined) {
+          value = `[${value}](${href})`;
+        }
+      }
+      return value;
+    })
+    .join('');
+
+const indentLines = (text: string, indent: string, firstIndent = indent): string =>
+  text
+    .split('\n')
+    .map((line, index) => (line === '' ? line : `${index === 0 ? firstIndent : indent}${line}`))
+    .join('\n');
+
+const listMarkdown = (list: EditorNode): string => {
+  const start = typeof list.attrs?.start === 'number' ? list.attrs.start : 1;
+  return (list.content ?? [])
+    .map((item, index) => {
+      const checkbox = item.type === 'taskItem' ? (item.attrs?.checked === true ? '[x] ' : '[ ] ') : '';
+      const marker = list.type === 'orderedList' ? `${start + index}. ` : `- ${checkbox}`;
+      const body = (item.content ?? []).map(blockMarkdown).filter((block) => block !== '').join('\n');
+      return indentLines(body, '  ', marker);
+    })
+    .join('\n');
+};
+
+const tableMarkdown = (table: EditorNode): string => {
+  const rows = (table.content ?? []).map(
+    (row) =>
+      `| ${(row.content ?? [])
+        .map((cell) => (cell.content ?? []).map((block) => inlineMarkdown(block.content ?? [])).join(' ').replaceAll('|', '\\|'))
+        .join(' | ')} |`,
+  );
+  const columns = table.content?.[0]?.content?.length ?? 0;
+  return [rows[0] ?? '', `| ${Array.from({ length: columns }, () => '---').join(' | ')} |`, ...rows.slice(1)].join('\n');
+};
+
+const blockMarkdown = (node: EditorNode): string => {
+  const children = node.content ?? [];
+  if (node.type === 'paragraph') {
+    return inlineMarkdown(children);
+  }
+  if (node.type === 'heading') {
+    const level = typeof node.attrs?.level === 'number' ? node.attrs.level : 1;
+    return `${'#'.repeat(level)} ${inlineMarkdown(children)}`;
+  }
+  if (node.type === 'bulletList' || node.type === 'orderedList' || node.type === 'taskList') {
+    return listMarkdown(node);
+  }
+  if (node.type === 'blockquote') {
+    return blocksToMarkdown(children)
+      .split('\n')
+      .map((line) => (line === '' ? '>' : `> ${line}`))
+      .join('\n');
+  }
+  if (node.type === 'codeBlock') {
+    return `\`\`\`${stringAttr(node, 'language')}\n${children.map((child) => child.text ?? '').join('')}\n\`\`\``;
+  }
+  if (node.type === 'horizontalRule') {
+    return '---';
+  }
+  if (node.type === 'image') {
+    const src = stringAttr(node, 'src');
+    return src === '' ? '' : `![${stringAttr(node, 'alt')}](${src})`;
+  }
+  if (node.type === 'table') {
+    return tableMarkdown(node);
+  }
+  if (node.type === 'callout') {
+    return `:::${stringAttr(node, 'type') || 'info'}\n${blocksToMarkdown(children)}\n:::`;
+  }
+  if (node.type === 'mathBlock') {
+    return `$$\n${stringAttr(node, 'text')}\n$$`;
+  }
+  if (node.type === 'details') {
+    const summary = children.find((child) => child.type === 'detailsSummary');
+    const body = children.filter((child) => child.type !== 'detailsSummary');
+    return `<details markdown="1">\n<summary>${inlineMarkdown(summary?.content ?? [])}</summary>\n\n${blocksToMarkdown(body)}\n\n</details>`;
+  }
+  if (children.length === 0) {
+    const src = stringAttr(node, 'src');
+    return src === '' ? '' : `[${src}](${src})`;
+  }
+  return children.some((child) => child.type === 'text') ? inlineMarkdown(children) : blocksToMarkdown(children);
+};
+
+const blocksToMarkdown = (nodes: EditorNode[]): string =>
+  nodes
+    .map(blockMarkdown)
+    .filter((block) => block !== '')
+    .join('\n\n');
+
+export const editorToMarkdown = (document: EditorNode): string => blocksToMarkdown(document.content ?? []);
+
 type Member = { id: string; name: string };
 
 const commentLine = (line: string, members: Map<string, Member>): EditorNode[] => {
@@ -582,6 +753,8 @@ export const findQuote = (document: EditorNode, quote: string): QuoteMatch => {
 export type DocmostSpace = z.infer<typeof spaceSchema>;
 export type DocmostTreePage = z.infer<typeof treePageSchema>;
 export type DocmostSearchResult = z.infer<typeof searchResultSchema>;
+export type DocmostRevision = z.infer<typeof revisionSchema>;
+export type DocmostRecentPage = z.infer<typeof recentPageSchema>;
 export type DocmostPage = Omit<z.infer<typeof pageSchema>, 'content'> & { markdown: string };
 
 export type ContentOperation = 'replace' | 'append' | 'prepend';
@@ -890,6 +1063,17 @@ export const createDocmostClient = (config: DocmostConfig) => {
     itemSchema: ItemSchema,
   ): Promise<z.infer<ItemSchema>[]> => (await collectPages(endpoint, body, itemSchema)).items;
 
+  const fetchCursorPage = async <ItemSchema extends z.ZodType>(
+    endpoint: string,
+    body: object,
+    itemSchema: ItemSchema,
+    limit: number,
+    cursor?: string,
+  ): Promise<{ items: z.infer<ItemSchema>[]; nextCursor: string | null }> => {
+    const result = await post(endpoint, { ...body, limit, cursor }, paginatedSchema(itemSchema));
+    return { items: result.items, nextCursor: result.meta.hasNextPage ? (result.meta.nextCursor ?? null) : null };
+  };
+
   const pageUrl = (slugId: string): string => `${config.baseUrl}/p/${slugId}`;
 
   const listSpaces = (): Promise<{ items: DocmostSpace[]; complete: boolean }> =>
@@ -902,6 +1086,20 @@ export const createDocmostClient = (config: DocmostConfig) => {
 
   const getPage = async (pageId: string): Promise<DocmostPage> =>
     toPage(await post('/pages/info', { pageId: normalizePageReference(pageId), format: 'markdown' }, pageSchema));
+
+  const listPageHistory = (pageReference: string, limit: number, cursor?: string) =>
+    fetchCursorPage('/pages/history', { pageId: normalizePageReference(pageReference) }, revisionSchema, limit, cursor);
+
+  const getPageRevision = async (historyId: string) => {
+    const { content, ...revision } = await post('/pages/history/info', { historyId: historyId.trim() }, revisionContentSchema);
+    return { ...revision, markdown: content ? editorToMarkdown(content) : '' };
+  };
+
+  const listRecentPages = (spaceId: string | undefined, limit: number, cursor?: string) =>
+    fetchCursorPage('/pages/recent', { spaceId }, recentPageSchema, limit, cursor);
+
+  const getBreadcrumbs = (pageReference: string): Promise<DocmostTreePage[]> =>
+    post('/pages/breadcrumbs', { pageId: normalizePageReference(pageReference) }, z.array(treePageSchema));
 
   const resolvePageId = async (pageReference: string): Promise<string> => {
     const normalizedReference = normalizePageReference(pageReference);
@@ -1422,6 +1620,10 @@ export const createDocmostClient = (config: DocmostConfig) => {
     listChildPages,
     searchPages,
     getPage,
+    listPageHistory,
+    getPageRevision,
+    listRecentPages,
+    getBreadcrumbs,
     createPage,
     updatePage,
     editPage,

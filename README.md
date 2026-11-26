@@ -33,6 +33,10 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `list_pages` | Lists the root pages of a space, or the children of a page, with each page's `updatedAt` on Docmost 0.97 and newer |
 | `search_pages` | Full-text search, optionally within one space, with each result's `spaceId` and `updatedAt`; `offset` pages through more results |
 | `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
+| `list_page_history` | Lists a page's saved revisions, newest first, with author, contributors and time |
+| `get_page_revision` | Returns one saved revision as Markdown, 500 lines at a time by default |
+| `list_recent_pages` | Lists recently updated pages across the account's spaces, or within one space |
+| `get_page_breadcrumbs` | Returns the path from the space root down to a page |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
 | `edit_page` | Replaces an exact piece of text in a page, in place when it is plain text, leaving the rest of the page as it is |
@@ -176,6 +180,7 @@ The server still logs in to Docmost with its own `DOCMOST_*` variables, so every
 - `delete_comment` checks a thread for replies just before deleting it. A reply posted in the moment between that check and the delete is deleted with the thread, because Docmost's delete can't be made conditional.
 - The HTTP transport is stateless: it keeps no MCP sessions, so it sends no server-initiated notifications and serves no `GET` stream.
 - `search_pages` offers a next `offset` only when a full page of results came back. Docmost drops pages the account can't open after counting, so a short page can still have more results after it.
+- Docmost returns revisions only as editor JSON, so `get_page_revision` converts them to Markdown itself; content Markdown can't hold, such as diagrams or embeds, comes back as a link or is left out.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
 - When the collaboration websocket can't be reached, `edit_page` falls back to writing the saved page. Docmost saves what people type 10 to 45 seconds after they type it, so in that case text typed in that window by someone with the page open can be lost.
 - Before a whole-body rewrite the server compares the live text with the saved text, not formatting, so bold or colour added in the last 45 seconds without typing can still be lost by a rewrite.

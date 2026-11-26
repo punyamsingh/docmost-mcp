@@ -72,6 +72,10 @@ const pageReferenceSchema = z
   .min(1)
   .describe('Page id, slug id, or the full page URL copied from the browser.');
 
+const listLimitSchema = z.number().int().min(1).max(100).optional().describe('Maximum results to return; defaults to 20.');
+
+const cursorSchema = z.string().min(1).optional().describe('nextCursor from the previous call, to fetch the next results.');
+
 const readOnlyAnnotations = { readOnlyHint: true, openWorldHint: true };
 
 const commentIdSchema = z.string().min(1).describe('Comment id from list_comments.');
@@ -207,6 +211,125 @@ const createServer = (): McpServer => {
             ? ''
             : `\n\n[lines ${window.firstLine}–${window.lastLine} of ${window.totalLines}; call get_page with offset ${window.nextOffset} for more]`;
         return `${header}\n\n---\n\n${window.body}${continuation}`;
+      }),
+  );
+
+  server.registerTool(
+    'list_page_history',
+    {
+      title: 'List Docmost page history',
+      description: "Lists a page's saved revisions, newest first, with each revision's id, title, author, contributors and time.",
+      inputSchema: { pageId: pageReferenceSchema, limit: listLimitSchema, cursor: cursorSchema },
+      annotations: readOnlyAnnotations,
+    },
+    ({ pageId, limit, cursor }) =>
+      runTool(async (client) => {
+        const { items, nextCursor } = await client.listPageHistory(pageId, limit ?? 20, cursor);
+        return toJson({
+          revisions: items.map((revision) => ({
+            historyId: revision.id,
+            title: revision.title ?? null,
+            author: revision.lastUpdatedBy?.name ?? null,
+            contributors: (revision.contributors ?? []).flatMap((contributor) => (contributor.name ? [contributor.name] : [])),
+            createdAt: revision.createdAt,
+          })),
+          nextCursor,
+        });
+      }),
+  );
+
+  server.registerTool(
+    'get_page_revision',
+    {
+      title: 'Read a Docmost page revision',
+      description: 'Returns a window of one saved revision of a page as Markdown along with its title, author, time and line counts.',
+      inputSchema: {
+        historyId: z.string().min(1).describe('Revision id from list_page_history.'),
+        offset: z.number().int().min(1).optional().describe('First line to return, starting at 1; defaults to 1.'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(2000)
+          .optional()
+          .describe(`Number of lines to return; defaults to ${DEFAULT_LINE_LIMIT}.`),
+      },
+      annotations: readOnlyAnnotations,
+    },
+    ({ historyId, offset, limit }) =>
+      runTool(async (client) => {
+        const revision = await client.getPageRevision(historyId);
+        const window = sliceLines(revision.markdown, offset ?? 1, limit ?? DEFAULT_LINE_LIMIT);
+        const header = toJson({
+          historyId: revision.id,
+          pageId: revision.pageId,
+          title: revision.title ?? null,
+          author: revision.lastUpdatedBy?.name ?? null,
+          createdAt: revision.createdAt,
+          url: revision.slugId ? client.pageUrl(revision.slugId) : null,
+          totalLines: window.totalLines,
+          nextOffset: window.nextOffset,
+        });
+        const continuation =
+          window.nextOffset === null
+            ? ''
+            : `\n\n[lines ${window.firstLine}–${window.lastLine} of ${window.totalLines}; call get_page_revision with offset ${window.nextOffset} for more]`;
+        return `${header}\n\n---\n\n${window.body}${continuation}`;
+      }),
+  );
+
+  server.registerTool(
+    'list_recent_pages',
+    {
+      title: 'List recent Docmost pages',
+      description: 'Lists the most recently updated pages across the spaces this account belongs to, or within one space, newest first.',
+      inputSchema: {
+        spaceId: z.string().optional().describe('Restrict the list to this space id.'),
+        limit: listLimitSchema,
+        cursor: cursorSchema,
+      },
+      annotations: readOnlyAnnotations,
+    },
+    ({ spaceId, limit, cursor }) =>
+      runTool(async (client) => {
+        const { items, nextCursor } = await client.listRecentPages(spaceId, limit ?? 20, cursor);
+        return toJson({
+          pages: items.map((page) => ({
+            id: page.id,
+            slugId: page.slugId,
+            title: page.title ?? null,
+            spaceId: page.spaceId,
+            space: page.space?.name ?? null,
+            parentPageId: page.parentPageId ?? null,
+            updatedAt: page.updatedAt ?? null,
+            lastUpdatedBy: page.lastUpdatedBy?.name ?? null,
+            url: client.pageUrl(page.slugId),
+          })),
+          nextCursor,
+        });
+      }),
+  );
+
+  server.registerTool(
+    'get_page_breadcrumbs',
+    {
+      title: 'Get Docmost page breadcrumbs',
+      description: 'Returns the path from the space root down to a page, listing each ancestor and then the page itself.',
+      inputSchema: { pageId: pageReferenceSchema },
+      annotations: readOnlyAnnotations,
+    },
+    ({ pageId }) =>
+      runTool(async (client) => {
+        const path = await client.getBreadcrumbs(pageId);
+        return toJson({
+          path: path.map((page) => ({
+            id: page.id,
+            slugId: page.slugId,
+            title: page.title ?? null,
+            hasChildren: page.hasChildren ?? false,
+            url: client.pageUrl(page.slugId),
+          })),
+        });
       }),
   );
 
