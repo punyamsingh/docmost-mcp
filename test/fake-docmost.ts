@@ -26,6 +26,8 @@ export type FakePage = {
 
 export type FakeMember = { id: string; name: string };
 
+export type FakeSpace = { id: string; name: string; slug: string };
+
 export type FakeComment = {
   id: string;
   pageId: string;
@@ -221,9 +223,16 @@ const readBody = (request: IncomingMessage) =>
 
 export const startFakeDocmost = async (
   initialPages: FakePage[],
-  options: { comments?: FakeComment[]; members?: FakeMember[] } = {},
+  options: {
+    comments?: FakeComment[];
+    members?: FakeMember[];
+    spaces?: FakeSpace[];
+    sidebarPageSize?: number;
+    sidebarWithoutUpdatedAt?: boolean;
+  } = {},
 ) => {
   const pages = initialPages.map((page) => structuredClone(page));
+  const spaces = options.spaces ?? [{ id: SPACE_ID, name: 'General', slug: 'general' }];
   const comments = (options.comments ?? []).map((comment) => structuredClone(comment));
   const members = [ACCOUNT, ...(options.members ?? [])];
   let commentMarks: 'apply' | 'drop' = 'apply';
@@ -248,6 +257,26 @@ export const startFakeDocmost = async (
   const pageInfo = ({ markdown, json, textPieces: _pieces, ...fields }: FakePage, format: unknown) => ({
     ...fields,
     content: format === 'markdown' ? markdown : json,
+  });
+
+  const cursorPage = <Item>(items: Item[], body: Record<string, unknown>, fixedLimit?: number) => {
+    const limit = fixedLimit ?? (typeof body.limit === 'number' ? body.limit : 20);
+    const start = typeof body.cursor === 'string' ? Number(body.cursor) : 0;
+    const hasNextPage = start + limit < items.length;
+    return {
+      items: items.slice(start, start + limit),
+      meta: { hasNextPage, nextCursor: hasNextPage ? String(start + limit) : null },
+    };
+  };
+
+  const sidebarView = (page: FakePage) => ({
+    id: page.id,
+    slugId: page.slugId,
+    title: page.title,
+    spaceId: page.spaceId,
+    parentPageId: page.parentPageId,
+    hasChildren: pages.some((child) => child.parentPageId === page.id),
+    ...(options.sidebarWithoutUpdatedAt ? {} : { updatedAt: page.updatedAt }),
   });
 
   const touch = (page: FakePage) => {
@@ -512,13 +541,41 @@ export const startFakeDocmost = async (
       return;
     }
     if (endpoint === '/spaces') {
-      send(response, 200, {
-        data: { items: [{ id: SPACE_ID, name: 'General', slug: 'general' }], meta: { hasNextPage: false } },
-      });
+      send(response, 200, { data: cursorPage(spaces, body) });
       return;
     }
     if (endpoint === '/search') {
-      send(response, 200, { data: { items: [] } });
+      const query = typeof body.query === 'string' ? body.query.toLowerCase() : '';
+      const limit = typeof body.limit === 'number' ? body.limit : 25;
+      const offset = typeof body.offset === 'number' ? body.offset : 0;
+      const matches = pages.filter(
+        (page) =>
+          (body.spaceId === undefined || page.spaceId === body.spaceId) &&
+          `${page.title}\n${page.markdown}`.toLowerCase().includes(query),
+      );
+      send(response, 200, {
+        data: {
+          items: matches.slice(offset, offset + limit).map((page) => ({
+            id: page.id,
+            slugId: page.slugId,
+            title: page.title,
+            parentPageId: page.parentPageId,
+            updatedAt: page.updatedAt,
+            highlight: `<b>${query}</b>`,
+            space: spaces.find((space) => space.id === page.spaceId) ?? null,
+          })),
+        },
+      });
+      return;
+    }
+    if (endpoint === '/pages/sidebar-pages' && body.pageId === undefined) {
+      send(response, 200, {
+        data: cursorPage(
+          pages.filter((page) => page.spaceId === body.spaceId && page.parentPageId === null).map(sidebarView),
+          body,
+          options.sidebarPageSize,
+        ),
+      });
       return;
     }
     if (endpoint === '/pages/create') {
@@ -550,20 +607,23 @@ export const startFakeDocmost = async (
       return;
     }
     if (endpoint === '/comments') {
-      const pageComments = comments.filter((comment) => comment.pageId === page.id);
-      const limit = typeof body.limit === 'number' ? body.limit : 20;
-      const start = typeof body.cursor === 'string' ? Number(body.cursor) : 0;
-      const hasNextPage = start + limit < pageComments.length;
       send(response, 200, {
-        data: {
-          items: pageComments.slice(start, start + limit).map(commentView),
-          meta: { hasNextPage, nextCursor: hasNextPage ? String(start + limit) : null },
-        },
+        data: cursorPage(comments.filter((comment) => comment.pageId === page.id).map(commentView), body),
       });
       return;
     }
     if (endpoint === '/comments/create') {
       createComment(page, body, response);
+      return;
+    }
+    if (endpoint === '/pages/sidebar-pages') {
+      send(response, 200, {
+        data: cursorPage(
+          pages.filter((child) => child.parentPageId === page.id).map(sidebarView),
+          body,
+          options.sidebarPageSize,
+        ),
+      });
       return;
     }
     if (endpoint === '/pages/info') {
