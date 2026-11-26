@@ -150,11 +150,31 @@ The server reaches Docmost's collaboration websocket at `DOCMOST_URL` + `/collab
 
 `npm test` builds the server and runs the test suite against a fake Docmost, so it needs no Docmost instance.
 
+### Over HTTP
+
+The server speaks stdio by default. To serve [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http) instead, start it with `--http` or set `DOCMOST_MCP_PORT`:
+
+```bash
+DOCMOST_URL=https://docs.example.com DOCMOST_EMAIL=you@example.com DOCMOST_PASSWORD='your-password' \
+  npx -y @punyamsingh/docmost-mcp --http --port 3000
+```
+
+Clients connect to `http://127.0.0.1:3000/mcp`, for example `claude mcp add --transport http docmost http://127.0.0.1:3000/mcp`.
+
+| Flag | Environment variable | Default |
+| --- | --- | --- |
+| `--port` | `DOCMOST_MCP_PORT` | `3000` |
+| `--host` | `DOCMOST_MCP_HOST` | `127.0.0.1` |
+| | `DOCMOST_MCP_TOKEN` | none |
+
+The server still logs in to Docmost with its own `DOCMOST_*` variables, so every client that reaches it acts as that one account. When `DOCMOST_MCP_TOKEN` is set, each request must send `Authorization: Bearer <token>`. The server refuses to bind to anything but a loopback address without a token, and serves plain HTTP, so put it behind a TLS proxy before exposing it to a network.
+
 ## Limitations
 
 - No tools for permissions.
 - Mentions are looked up through Docmost's people search, 100 people at a time; when 100 or more people match a name, uniqueness can't be confirmed and the mention is refused.
 - `delete_comment` checks a thread for replies just before deleting it. A reply posted in the moment between that check and the delete is deleted with the thread, because Docmost's delete can't be made conditional.
+- The HTTP transport is stateless: it keeps no MCP sessions, so it sends no server-initiated notifications and serves no `GET` stream.
 - `search_pages` offers a next `offset` only when a full page of results came back. Docmost drops pages the account can't open after counting, so a short page can still have more results after it.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
 - When the collaboration websocket can't be reached, `edit_page` falls back to writing the saved page. Docmost saves what people type 10 to 45 seconds after they type it, so in that case text typed in that window by someone with the page open can be lost.
