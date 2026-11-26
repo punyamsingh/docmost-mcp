@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, resolve } from 'node:path';
@@ -60,6 +60,7 @@ const treePageSchema = z.object({
   spaceId: z.string().nullish(),
   parentPageId: z.string().nullish(),
   hasChildren: z.boolean().nullish(),
+  position: z.string().nullish(),
   updatedAt: z.string().nullish(),
 });
 
@@ -88,6 +89,7 @@ const pageSchema = z.object({
   parentPageId: z.string().nullish(),
   content: z.unknown().optional(),
   updatedAt: z.string().nullish(),
+  deletedAt: z.string().nullish(),
   space: z
     .object({
       name: z.string().nullish(),
@@ -616,6 +618,12 @@ export type EditPageInput = {
   replaceAll: boolean;
 };
 
+export type MovePageInput = {
+  pageId: string;
+  parentPageId?: string;
+  spaceId?: string;
+};
+
 export type AddCommentInput = {
   pageId: string;
   text: string;
@@ -697,6 +705,58 @@ export const normalizePageReference = (pageReference: string): string => {
   }
   const pageSlug = pathMatch[1];
   return pageSlug.slice(pageSlug.lastIndexOf('-') + 1);
+};
+
+const BASE_62_DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+const POSITION_JITTER_LENGTH = 3;
+
+const integerPartLength = (position: string): number => {
+  const head = position.charCodeAt(0);
+  if (head >= 97 && head <= 122) {
+    return head - 97 + 2;
+  }
+  if (head >= 65 && head <= 90) {
+    return 90 - head + 2;
+  }
+  throw new DocmostError(`Unexpected page position "${position}" from Docmost.`);
+};
+
+const incrementInteger = (integer: string): string | undefined => {
+  const head = integer.charAt(0);
+  const digits = integer.slice(1).split('');
+  for (let index = digits.length - 1; index >= 0; index--) {
+    const next = BASE_62_DIGITS.indexOf(digits[index] ?? '0') + 1;
+    if (next < BASE_62_DIGITS.length) {
+      digits[index] = BASE_62_DIGITS.charAt(next);
+      return head + digits.join('');
+    }
+    digits[index] = '0';
+  }
+  if (head === 'Z') {
+    return 'a0';
+  }
+  if (head === 'z') {
+    return undefined;
+  }
+  const nextHead = String.fromCharCode(head.charCodeAt(0) + 1);
+  if (nextHead > 'a') {
+    digits.push('0');
+  } else {
+    digits.pop();
+  }
+  return nextHead + digits.join('');
+};
+
+// Docmost orders siblings by jittered fractional-index keys of 5 to 12 characters.
+export const positionAfter = (lastPosition: string | undefined): string => {
+  const integer =
+    lastPosition === undefined
+      ? 'a0'
+      : (incrementInteger(lastPosition.slice(0, integerPartLength(lastPosition))) ?? lastPosition);
+  const jitter = Array.from({ length: POSITION_JITTER_LENGTH }, () =>
+    BASE_62_DIGITS.charAt(1 + randomInt(BASE_62_DIGITS.length - 1)),
+  ).join('');
+  return integer + jitter;
 };
 
 export const createDocmostClient = (config: DocmostConfig) => {
@@ -1271,6 +1331,48 @@ export const createDocmostClient = (config: DocmostConfig) => {
     }
   };
 
+  const lastChildPosition = async (target: { spaceId: string } | { parentPageId: string }, movedPageId: string) =>
+    (await listChildPages(target)).items
+      .flatMap((sibling) => (sibling.id !== movedPageId && sibling.position ? [sibling.position] : []))
+      .sort()
+      .at(-1);
+
+  const movePage = async (input: MovePageInput): Promise<DocmostPage> => {
+    const page = await getPage(input.pageId);
+    const parentPage = input.parentPageId === undefined ? undefined : await getPage(input.parentPageId);
+    if (parentPage && input.spaceId && input.spaceId !== parentPage.spaceId) {
+      throw new DocmostError(`Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`);
+    }
+    const spaceId = parentPage?.spaceId ?? input.spaceId ?? page.spaceId;
+    if (spaceId !== page.spaceId) {
+      await post('/pages/move-to-space', { pageId: page.id, spaceId }, z.unknown());
+    }
+    if (parentPage || spaceId === page.spaceId) {
+      const target = parentPage ? { parentPageId: parentPage.id } : { spaceId };
+      const position = positionAfter(await lastChildPosition(target, page.id));
+      await post('/pages/move', { pageId: page.id, parentPageId: parentPage?.id ?? null, position }, z.unknown());
+    }
+    return getPage(page.id);
+  };
+
+  const deletePage = async (pageReference: string): Promise<{ page: DocmostPage; alreadyInTrash: boolean }> => {
+    const page = await getPage(pageReference);
+    const alreadyInTrash = Boolean(page.deletedAt);
+    if (!alreadyInTrash) {
+      await post('/pages/delete', { pageId: page.id }, z.unknown());
+    }
+    return { page, alreadyInTrash };
+  };
+
+  const restorePage = async (pageReference: string): Promise<{ page: DocmostPage; movedToSpaceRoot: boolean }> => {
+    const trashedPage = await getPage(pageReference);
+    if (!trashedPage.deletedAt) {
+      throw new DocmostError(`${trashedPage.title ?? trashedPage.id} is not in the trash.`);
+    }
+    const page = toPage(await post('/pages/restore', { pageId: trashedPage.id }, pageSchema));
+    return { page, movedToSpaceRoot: Boolean(trashedPage.parentPageId) && !page.parentPageId };
+  };
+
   const readUploadFile = async (filePath: string) => {
     const fullPath = resolve(filePath.replace(/^~(?=$|\/)/, homedir()));
     const fileStats = await stat(fullPath).catch(() => undefined);
@@ -1323,6 +1425,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
     createPage,
     updatePage,
     editPage,
+    movePage,
+    deletePage,
+    restorePage,
     listComments,
     addComment,
     replyToComment,

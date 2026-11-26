@@ -36,6 +36,9 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
 | `edit_page` | Replaces an exact piece of text in a page, in place when it is plain text, leaving the rest of the page as it is |
+| `move_page` | Moves a page and its subpages under another page or to a space root, including into another space |
+| `delete_page` | Moves a page and its subpages to the space's trash; never deletes permanently |
+| `restore_page` | Restores a page and its subpages from the trash |
 | `list_comments` | Lists a page's open comment threads with their replies, or every thread with `includeResolved` |
 | `add_comment` | Posts a page comment, or an inline comment attached to a `quote` copied from `get_page` |
 | `reply_to_comment` | Replies in a comment's thread |
@@ -168,7 +171,7 @@ The server still logs in to Docmost with its own `DOCMOST_*` variables, so every
 
 ## Limitations
 
-- No tools for deleting or moving pages, or for permissions.
+- No tools for permissions.
 - Mentions are looked up through Docmost's people search, 100 people at a time; when 100 or more people match a name, uniqueness can't be confirmed and the mention is refused.
 - `delete_comment` checks a thread for replies just before deleting it. A reply posted in the moment between that check and the delete is deleted with the thread, because Docmost's delete can't be made conditional.
 - The HTTP transport is stateless: it keeps no MCP sessions, so it sends no server-initiated notifications and serves no `GET` stream.
