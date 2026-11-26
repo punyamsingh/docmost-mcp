@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -6,6 +8,7 @@ import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import * as Y from 'yjs';
@@ -50,6 +53,46 @@ export const startServer = async (
   };
 
   return { client, call, cacheHome, close: () => client.close() };
+};
+
+export const runHttpServer = (
+  t: TestContext,
+  docmostUrl: string,
+  args: string[],
+  env: Record<string, string> = {},
+) => {
+  const child = spawn(process.execPath, [SERVER_ENTRY, ...args], {
+    env: { PATH: process.env.PATH ?? '', DOCMOST_URL: docmostUrl, DOCMOST_EMAIL: EMAIL, DOCMOST_PASSWORD: PASSWORD, ...env },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  t.after(() => child.kill());
+  let stderr = '';
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const exited = once(child, 'exit').then(([code]) => ({ code, stderr }));
+  const listening = () =>
+    new Promise<string>((resolve, reject) => {
+      const check = () => {
+        const url = /listening on (\S+)/.exec(stderr)?.[1];
+        if (url) {
+          resolve(url);
+        }
+      };
+      child.stderr.on('data', check);
+      check();
+      void exited.then(() => reject(new Error(`Server exited: ${stderr}`)));
+    });
+  return { listening, exited };
+};
+
+export const connectHttpClient = async (t: TestContext, url: string, token: string) => {
+  const client = new Client({ name: 'docmost-mcp-tests', version: '0.0.0' });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }),
+  );
+  t.after(() => client.close());
+  return client;
 };
 
 export const startHarness = async (
