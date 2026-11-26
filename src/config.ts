@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 
 export type DocmostConfig = {
   baseUrl: string;
@@ -13,6 +14,10 @@ export type DocmostConfig = {
 };
 
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+export const packageVersion = z
+  .object({ version: z.string() })
+  .parse(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))).version;
 
 const envFilePath = join(packageRoot, '.env');
 

@@ -12,7 +12,7 @@ import {
 } from './collab.js';
 import type { DocmostConfig } from './config.js';
 
-const MAX_LIST_ITEMS = 1000;
+export const MAX_LIST_ITEMS = 1000;
 const PAGE_SIZE = 100;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -56,9 +56,11 @@ const treePageSchema = z.object({
   slugId: z.string(),
   title: z.string().nullish(),
   icon: z.string().nullish(),
+  spaceId: z.string().nullish(),
   parentPageId: z.string().nullish(),
   hasChildren: z.boolean().nullish(),
   position: z.string().nullish(),
+  updatedAt: z.string().nullish(),
 });
 
 const searchResultSchema = z.object({
@@ -813,12 +815,15 @@ export const createDocmostClient = (config: DocmostConfig) => {
   ): Promise<{ items: z.infer<ItemSchema>[]; complete: boolean }> => {
     const collectedItems: z.infer<ItemSchema>[] = [];
     let cursor: string | undefined;
+    let dropped = false;
     do {
       const result = await post(endpoint, { ...body, limit: PAGE_SIZE, cursor }, paginatedSchema(itemSchema));
-      collectedItems.push(...result.items);
+      const room = MAX_LIST_ITEMS - collectedItems.length;
+      collectedItems.push(...result.items.slice(0, room));
+      dropped = result.items.length > room;
       cursor = result.meta.hasNextPage ? (result.meta.nextCursor ?? undefined) : undefined;
     } while (cursor && collectedItems.length < MAX_LIST_ITEMS);
-    return { items: collectedItems, complete: cursor === undefined };
+    return { items: collectedItems, complete: cursor === undefined && !dropped };
   };
 
   const collectAllPages = async <ItemSchema extends z.ZodType>(
@@ -829,10 +834,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
 
   const pageUrl = (slugId: string): string => `${config.baseUrl}/p/${slugId}`;
 
-  const listSpaces = (): Promise<DocmostSpace[]> => collectAllPages('/spaces', {}, spaceSchema);
+  const listSpaces = (): Promise<{ items: DocmostSpace[]; complete: boolean }> =>
+    collectPages('/spaces', {}, spaceSchema);
 
-  const searchPages = async (query: string, spaceId?: string, limit = 20): Promise<DocmostSearchResult[]> => {
-    const result = await post('/search', { query, spaceId, limit }, z.object({ items: z.array(searchResultSchema) }));
+  const searchPages = async (query: string, spaceId?: string, limit = 20, offset = 0): Promise<DocmostSearchResult[]> => {
+    const result = await post('/search', { query, spaceId, limit, offset }, z.object({ items: z.array(searchResultSchema) }));
     return result.items;
   };
 
@@ -844,8 +850,10 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return UUID_PATTERN.test(normalizedReference) ? normalizedReference : (await getPage(normalizedReference)).id;
   };
 
-  const listChildPages = async (target: { spaceId: string } | { parentPageId: string }): Promise<DocmostTreePage[]> =>
-    collectAllPages(
+  const listChildPages = async (
+    target: { spaceId: string } | { parentPageId: string },
+  ): Promise<{ items: DocmostTreePage[]; complete: boolean }> =>
+    collectPages(
       '/pages/sidebar-pages',
       'spaceId' in target ? { spaceId: target.spaceId } : { pageId: await resolvePageId(target.parentPageId) },
       treePageSchema,
@@ -1266,7 +1274,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
   };
 
   const lastChildPosition = async (target: { spaceId: string } | { parentPageId: string }, movedPageId: string) =>
-    (await listChildPages(target))
+    (await listChildPages(target)).items
       .flatMap((sibling) => (sibling.id !== movedPageId && sibling.position ? [sibling.position] : []))
       .sort()
       .at(-1);
