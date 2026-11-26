@@ -24,7 +24,10 @@ export type FakePage = {
   textPieces?: 'run' | 'node';
   position?: string;
   deletedAt?: string | null;
+  history?: FakeRevision[];
 };
+
+export type FakeRevision = { id: string; title: string; content: EditorNode; createdAt: string; authorId: string };
 
 export type FakeMember = { id: string; name: string };
 
@@ -259,7 +262,7 @@ export const startFakeDocmost = async (
   const hang = () => new Promise<void>((resolve) => hanging.push(resolve));
   const findPage = (reference: unknown) => pages.find((page) => page.id === reference || page.slugId === reference);
 
-  const pageInfo = ({ markdown, json, textPieces: _pieces, ...fields }: FakePage, format: unknown) => ({
+  const pageInfo = ({ markdown, json, textPieces: _pieces, history: _history, ...fields }: FakePage, format: unknown) => ({
     ...fields,
     content: format === 'markdown' ? markdown : json,
   });
@@ -289,6 +292,18 @@ export const startFakeDocmost = async (
     position: page.position,
     ...(options.sidebarWithoutUpdatedAt ? {} : { updatedAt: page.updatedAt }),
   });
+
+  const memberView = (id: string) => members.find((member) => member.id === id) ?? null;
+
+  const revisionView = (page: FakePage, { content, authorId, ...revision }: FakeRevision) => ({
+    ...revision,
+    pageId: page.id,
+    slugId: page.slugId,
+    lastUpdatedBy: memberView(authorId),
+    contributors: [memberView(authorId)],
+  });
+
+  const byNewest = (first: string, second: string) => Date.parse(second) - Date.parse(first);
 
   const touch = (page: FakePage) => {
     clock += 1000;
@@ -608,6 +623,28 @@ export const startFakeDocmost = async (
       send(response, 200, { data: { users: users.slice(0, typeof body.limit === 'number' ? body.limit : 10), pages: [] } });
       return;
     }
+    if (endpoint === '/pages/history/info') {
+      const owner = pages.find((candidate) => candidate.history?.some((revision) => revision.id === body.historyId));
+      const revision = owner?.history?.find((candidate) => candidate.id === body.historyId);
+      if (owner === undefined || revision === undefined) {
+        send(response, 404, { message: 'Page history not found' });
+        return;
+      }
+      send(response, 200, { data: { ...revisionView(owner, revision), content: revision.content } });
+      return;
+    }
+    if (endpoint === '/pages/recent') {
+      const recent = pages
+        .filter((page) => !page.deletedAt && (body.spaceId === undefined || page.spaceId === body.spaceId))
+        .sort((first, second) => byNewest(first.updatedAt, second.updatedAt))
+        .map(({ markdown: _markdown, json: _json, textPieces: _pieces, history: _history, ...fields }) => ({
+          ...fields,
+          space: spaces.find((space) => space.id === fields.spaceId) ?? null,
+          lastUpdatedBy: ACCOUNT,
+        }));
+      send(response, 200, { data: cursorPage(recent, body) });
+      return;
+    }
     if (endpoint.startsWith('/comments/') && endpoint !== '/comments/create') {
       handleComment(endpoint, body, response);
       return;
@@ -634,6 +671,28 @@ export const startFakeDocmost = async (
           body,
           options.sidebarPageSize,
         ),
+      });
+      return;
+    }
+    if (endpoint === '/pages/history') {
+      const revisions = [...(page.history ?? [])].sort((first, second) => byNewest(first.createdAt, second.createdAt));
+      send(response, 200, { data: cursorPage(revisions.map((revision) => revisionView(page, revision)), body) });
+      return;
+    }
+    if (endpoint === '/pages/breadcrumbs') {
+      const path: FakePage[] = [];
+      for (let current = findPage(page.id); current !== undefined && !current.deletedAt; current = findPage(current.parentPageId)) {
+        path.unshift(current);
+      }
+      send(response, 200, {
+        data: path.map(({ id, slugId, title, parentPageId, spaceId }) => ({
+          id,
+          slugId,
+          title,
+          parentPageId,
+          spaceId,
+          hasChildren: pages.some((candidate) => !candidate.deletedAt && candidate.parentPageId === id),
+        })),
       });
       return;
     }
