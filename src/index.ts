@@ -266,6 +266,66 @@ server.registerTool(
     }),
 );
 
+server.registerTool(
+  'move_page',
+  {
+    title: 'Move a Docmost page',
+    description:
+      'Moves a page and its subpages under another page or to the root of a space, including into another space, placing it last among its new siblings.',
+    inputSchema: {
+      pageId: pageReferenceSchema,
+      parentPageId: pageReferenceSchema.optional().describe('Move the page under this page, in whichever space it is.'),
+      spaceId: z
+        .string()
+        .optional()
+        .describe('Space id from list_spaces; without parentPageId, moves the page to the root of this space.'),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  ({ pageId, parentPageId, spaceId }) =>
+    runTool(async (client) => {
+      if (!parentPageId && !spaceId) {
+        throw new Error('Provide parentPageId or spaceId.');
+      }
+      return toJson(summarizePage(client, await client.movePage({ pageId, parentPageId, spaceId })));
+    }),
+);
+
+server.registerTool(
+  'delete_page',
+  {
+    title: 'Delete a Docmost page',
+    description:
+      "Moves a page and its subpages to the space's trash, from which they can be restored, and never deletes anything permanently.",
+    inputSchema: { pageId: pageReferenceSchema },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  },
+  ({ pageId }) =>
+    runTool(async (client) => {
+      const { page, alreadyInTrash } = await client.deletePage(pageId);
+      return toJson({ ...summarizePage(client, page), inTrash: true, ...(alreadyInTrash ? { note: 'The page was already in the trash.' } : {}) });
+    }),
+);
+
+server.registerTool(
+  'restore_page',
+  {
+    title: 'Restore a Docmost page',
+    description:
+      'Restores a page and its subpages from the trash to where they were, or to the space root when the old parent is still in the trash.',
+    inputSchema: { pageId: pageReferenceSchema },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  ({ pageId }) =>
+    runTool(async (client) => {
+      const { page, movedToSpaceRoot } = await client.restorePage(pageId);
+      return toJson({
+        ...summarizePage(client, page),
+        ...(movedToSpaceRoot ? { note: 'Restored to the space root because its parent page is still in the trash.' } : {}),
+      });
+    }),
+);
+
 const commentIdSchema = z.string().min(1).describe('Comment id from list_comments.');
 
 const commentTextSchema = z
