@@ -35,6 +35,11 @@
           "description": "Password of that Docmost account",
           "isRequired": true,
           "isSecret": true
+        },
+        {
+          "name": "DOCMOST_COLLAB_URL",
+          "description": "Docmost's collaboration websocket, if not DOCMOST_URL + /collab (Docmost's COLLAB_URL setting)",
+          "isRequired": false
         }
       ]
     }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { test } from 'node:test';
 import { connectHttpClient, runHttpServer, startHarness } from './helpers.ts';
@@ -45,6 +46,8 @@ test('lists the 13 tools with their annotations and sends the instructions', asy
     resolve_comment: { ...write, destructiveHint: false, idempotentHint: true },
   });
   assert.match(server.client.getInstructions() ?? '', /Read a page with get_page before changing it/);
+  const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(server.client.getServerVersion()?.version, packageJson.version);
   assert.equal(docmost.requests.length, 0);
 });
 

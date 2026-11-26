@@ -30,8 +30,8 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | Tool | What it does |
 |---|---|
 | `list_spaces` | Lists the spaces the account can see, with their ids |
-| `list_pages` | Lists the root pages of a space, or the children of a page |
-| `search_pages` | Full-text search, optionally within one space |
+| `list_pages` | Lists the root pages of a space, or the children of a page, with each page's `updatedAt` on Docmost 0.97 and newer |
+| `search_pages` | Full-text search, optionally within one space, with each result's `spaceId` and `updatedAt`; `offset` pages through more results |
 | `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
@@ -44,6 +44,8 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `resolve_comment` | Resolves or reopens a thread, on Docmost instances licensed for it |
 
 Every tool that takes a page accepts a page id, a slug id, or the page URL copied from the browser.
+
+`list_spaces` and `list_pages` return at most 1000 items; a longer list ends with a note saying it was cut short.
 
 Pass the `updatedAt` from `get_page` as `expectedUpdatedAt` to `update_page`, and a replace is refused if someone changed the page in the meantime. `edit_page` reads the current body itself, so it applies on top of other people's changes as long as the text still matches exactly once.
 
@@ -170,6 +172,7 @@ The server still logs in to Docmost with its own `DOCMOST_*` variables, so every
 - Mentions are looked up through Docmost's people search, 100 people at a time; when 100 or more people match a name, uniqueness can't be confirmed and the mention is refused.
 - `delete_comment` checks a thread for replies just before deleting it. A reply posted in the moment between that check and the delete is deleted with the thread, because Docmost's delete can't be made conditional.
 - The HTTP transport is stateless: it keeps no MCP sessions, so it sends no server-initiated notifications and serves no `GET` stream.
+- `search_pages` offers a next `offset` only when a full page of results came back. Docmost drops pages the account can't open after counting, so a short page can still have more results after it.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
 - When the collaboration websocket can't be reached, `edit_page` falls back to writing the saved page. Docmost saves what people type 10 to 45 seconds after they type it, so in that case text typed in that window by someone with the page open can be lost.
 - Before a whole-body rewrite the server compares the live text with the saved text, not formatting, so bold or colour added in the last 45 seconds without typing can still be lost by a rewrite.

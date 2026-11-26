@@ -3,8 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { loadConfig, loadHttpConfig } from './config.js';
-import { createDocmostClient, type DocmostClient, type DocmostPage } from './docmost.js';
+import { loadConfig, loadHttpConfig, packageVersion } from './config.js';
+import { createDocmostClient, MAX_LIST_ITEMS, type DocmostClient, type DocmostPage } from './docmost.js';
 import { startHttpServer } from './http.js';
 
 console.log = console.error;
@@ -26,6 +26,9 @@ const runTool = async (action: (client: DocmostClient) => Promise<string>): Prom
 };
 
 const toJson = (value: unknown): string => JSON.stringify(value, null, 2);
+
+const listResult = (items: unknown[], complete: boolean, noun: string): string =>
+  complete ? toJson(items) : `${toJson(items)}\n\n[first ${MAX_LIST_ITEMS} ${noun} only; the rest were not fetched]`;
 
 const summarizePage = (client: DocmostClient, page: DocmostPage) => ({
   id: page.id,
@@ -82,7 +85,7 @@ const commentWriteAnnotations = { readOnlyHint: false, destructiveHint: false, i
 
 const createServer = (): McpServer => {
   const server = new McpServer(
-    { name: 'docmost', version: '0.5.0' },
+    { name: 'docmost', version: packageVersion },
     {
       instructions:
         'Docmost wiki access. Every page argument accepts a page id, slug id or page URL. Read a page with get_page before changing it. For small changes use edit_page with text copied exactly from get_page output. For whole-body rewrites use update_page with operation replace and pass the updatedAt from your read as expectedUpdatedAt. Markdown bodies must not repeat the page title as a leading # heading. To comment on a sentence, pass add_comment a quote copied from get_page.',
@@ -97,7 +100,11 @@ const createServer = (): McpServer => {
       inputSchema: {},
       annotations: readOnlyAnnotations,
     },
-    () => runTool(async (client) => toJson(await client.listSpaces())),
+    () =>
+      runTool(async (client) => {
+        const { items, complete } = await client.listSpaces();
+        return listResult(items, complete, 'spaces');
+      }),
   );
 
   server.registerTool(
@@ -116,15 +123,18 @@ const createServer = (): McpServer => {
         if (!spaceId && !parentPageId) {
           throw new Error('Provide spaceId or parentPageId.');
         }
-        const pages = await client.listChildPages(parentPageId ? { parentPageId } : { spaceId: spaceId ?? '' });
-        return toJson(
-          pages.map((page) => ({
+        const { items, complete } = await client.listChildPages(parentPageId ? { parentPageId } : { spaceId: spaceId ?? '' });
+        return listResult(
+          items.map((page) => ({
             id: page.id,
             slugId: page.slugId,
             title: page.title,
             hasChildren: page.hasChildren ?? false,
             url: client.pageUrl(page.slugId),
+            updatedAt: page.updatedAt ?? null,
           })),
+          complete,
+          'pages',
         );
       }),
   );
@@ -138,22 +148,30 @@ const createServer = (): McpServer => {
         query: z.string().min(1).max(200).describe('Words to search for.'),
         spaceId: z.string().optional().describe('Restrict the search to this space id.'),
         limit: z.number().int().min(1).max(100).optional().describe('Maximum results to return; defaults to 20.'),
+        offset: z.number().int().min(0).optional().describe('Number of results to skip, for the next page of results; defaults to 0.'),
       },
       annotations: readOnlyAnnotations,
     },
-    ({ query, spaceId, limit }) =>
+    ({ query, spaceId, limit, offset }) =>
       runTool(async (client) => {
-        const results = await client.searchPages(query, spaceId, limit);
-        return toJson(
+        const pageSize = limit ?? 20;
+        const start = offset ?? 0;
+        const results = await client.searchPages(query, spaceId, pageSize, start);
+        const json = toJson(
           results.map((result) => ({
             id: result.id,
             slugId: result.slugId,
             title: result.title,
+            spaceId: result.space?.id ?? null,
             space: result.space?.name ?? null,
             highlight: result.highlight ?? null,
             url: result.slugId ? client.pageUrl(result.slugId) : null,
+            updatedAt: result.updatedAt ?? null,
           })),
         );
+        return results.length < pageSize
+          ? json
+          : `${json}\n\n[call search_pages with offset ${start + pageSize} for more]`;
       }),
   );
 
