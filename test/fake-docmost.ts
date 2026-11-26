@@ -223,7 +223,13 @@ const readBody = (request: IncomingMessage) =>
 
 export const startFakeDocmost = async (
   initialPages: FakePage[],
-  options: { comments?: FakeComment[]; members?: FakeMember[]; spaces?: FakeSpace[] } = {},
+  options: {
+    comments?: FakeComment[];
+    members?: FakeMember[];
+    spaces?: FakeSpace[];
+    sidebarPageSize?: number;
+    sidebarWithoutUpdatedAt?: boolean;
+  } = {},
 ) => {
   const pages = initialPages.map((page) => structuredClone(page));
   const spaces = options.spaces ?? [{ id: SPACE_ID, name: 'General', slug: 'general' }];
@@ -253,8 +259,8 @@ export const startFakeDocmost = async (
     content: format === 'markdown' ? markdown : json,
   });
 
-  const cursorPage = <Item>(items: Item[], body: Record<string, unknown>) => {
-    const limit = typeof body.limit === 'number' ? body.limit : 20;
+  const cursorPage = <Item>(items: Item[], body: Record<string, unknown>, fixedLimit?: number) => {
+    const limit = fixedLimit ?? (typeof body.limit === 'number' ? body.limit : 20);
     const start = typeof body.cursor === 'string' ? Number(body.cursor) : 0;
     const hasNextPage = start + limit < items.length;
     return {
@@ -270,7 +276,7 @@ export const startFakeDocmost = async (
     spaceId: page.spaceId,
     parentPageId: page.parentPageId,
     hasChildren: pages.some((child) => child.parentPageId === page.id),
-    updatedAt: page.updatedAt,
+    ...(options.sidebarWithoutUpdatedAt ? {} : { updatedAt: page.updatedAt }),
   });
 
   const touch = (page: FakePage) => {
@@ -567,6 +573,7 @@ export const startFakeDocmost = async (
         data: cursorPage(
           pages.filter((page) => page.spaceId === body.spaceId && page.parentPageId === null).map(sidebarView),
           body,
+          options.sidebarPageSize,
         ),
       });
       return;
@@ -611,7 +618,11 @@ export const startFakeDocmost = async (
     }
     if (endpoint === '/pages/sidebar-pages') {
       send(response, 200, {
-        data: cursorPage(pages.filter((child) => child.parentPageId === page.id).map(sidebarView), body),
+        data: cursorPage(
+          pages.filter((child) => child.parentPageId === page.id).map(sidebarView),
+          body,
+          options.sidebarPageSize,
+        ),
       });
       return;
     }

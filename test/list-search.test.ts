@@ -24,11 +24,31 @@ test('list_pages returns root pages with updatedAt, and the children of a page',
   );
 });
 
+test('list_pages reports updatedAt as null when Docmost does not return it', async (t) => {
+  const { server } = await startHarness(t, [makePage({ id: 'root' })], { sidebarWithoutUpdatedAt: true });
+
+  const [page] = JSON.parse((await server.call('list_pages', { spaceId: SPACE_ID })).text);
+  assert.equal(page.id, 'root');
+  assert.equal(page.updatedAt, null);
+});
+
 test('list_pages says when it stopped at the item cap', async (t) => {
   const { server } = await startHarness(t, manyPages(1001));
 
   const result = await server.call('list_pages', { spaceId: SPACE_ID });
   const [json, note] = result.text.split('\n\n[');
+  assert.equal(JSON.parse(json ?? '').length, 1000);
+  assert.equal(note, 'first 1000 pages only; the rest were not fetched]');
+});
+
+test('list_pages never returns more than the cap, even from a batch larger than asked for', async (t) => {
+  const exact = await startHarness(t, manyPages(1000), { sidebarPageSize: 200 });
+  const exactResult = await exact.server.call('list_pages', { spaceId: SPACE_ID });
+  assert.equal(JSON.parse(exactResult.text).length, 1000);
+
+  const over = await startHarness(t, manyPages(1100), { sidebarPageSize: 300 });
+  const overResult = await over.server.call('list_pages', { spaceId: SPACE_ID });
+  const [json, note] = overResult.text.split('\n\n[');
   assert.equal(JSON.parse(json ?? '').length, 1000);
   assert.equal(note, 'first 1000 pages only; the rest were not fetched]');
 });

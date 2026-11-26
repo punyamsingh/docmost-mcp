@@ -755,12 +755,15 @@ export const createDocmostClient = (config: DocmostConfig) => {
   ): Promise<{ items: z.infer<ItemSchema>[]; complete: boolean }> => {
     const collectedItems: z.infer<ItemSchema>[] = [];
     let cursor: string | undefined;
+    let dropped = false;
     do {
       const result = await post(endpoint, { ...body, limit: PAGE_SIZE, cursor }, paginatedSchema(itemSchema));
-      collectedItems.push(...result.items);
+      const room = MAX_LIST_ITEMS - collectedItems.length;
+      collectedItems.push(...result.items.slice(0, room));
+      dropped = result.items.length > room;
       cursor = result.meta.hasNextPage ? (result.meta.nextCursor ?? undefined) : undefined;
     } while (cursor && collectedItems.length < MAX_LIST_ITEMS);
-    return { items: collectedItems, complete: cursor === undefined };
+    return { items: collectedItems, complete: cursor === undefined && !dropped };
   };
 
   const collectAllPages = async <ItemSchema extends z.ZodType>(

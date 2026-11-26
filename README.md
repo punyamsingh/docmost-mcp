@@ -30,7 +30,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | Tool | What it does |
 |---|---|
 | `list_spaces` | Lists the spaces the account can see, with their ids |
-| `list_pages` | Lists the root pages of a space, or the children of a page, with each page's `updatedAt` |
+| `list_pages` | Lists the root pages of a space, or the children of a page, with each page's `updatedAt` on Docmost 0.97 and newer |
 | `search_pages` | Full-text search, optionally within one space, with each result's `spaceId` and `updatedAt`; `offset` pages through more results |
 | `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
