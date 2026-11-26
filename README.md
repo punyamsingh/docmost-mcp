@@ -45,6 +45,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `edit_comment` | Replaces the text of one of the account's own comments |
 | `delete_comment` | Permanently deletes a comment and removes its highlight; a whole thread needs `deleteReplies` |
 | `resolve_comment` | Resolves or reopens a thread, on Docmost instances licensed for it |
+| `upload_attachment` | Uploads a local image or file (up to 50 MB) to a page and returns a Markdown image or link to place with `edit_page` or `update_page` |
 
 Every tool that takes a page accepts a page id, a slug id, or the page URL copied from the browser.
 
@@ -151,7 +152,6 @@ The server reaches Docmost's collaboration websocket at `DOCMOST_URL` + `/collab
 
 ## Limitations
 
-- Uploading local image files is not supported yet; reference images that are already hosted somewhere by URL.
 - No tools for permissions.
 - Mentions are looked up through Docmost's people search, 100 people at a time; when 100 or more people match a name, uniqueness can't be confirmed and the mention is refused.
 - `delete_comment` checks a thread for replies just before deleting it. A reply posted in the moment between that check and the delete is deleted with the thread, because Docmost's delete can't be made conditional.

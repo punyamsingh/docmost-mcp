@@ -1,6 +1,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, dirname, extname, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
@@ -146,6 +147,49 @@ const commentSchema = z.object({
 type DocmostComment = z.infer<typeof commentSchema>;
 
 const suggestSchema = z.looseObject({ users: z.array(memberSchema).optional() });
+
+const attachmentSchema = z.object({ id: z.string(), fileName: z.string(), mimeType: z.string().nullish() });
+
+const uploadResponseSchema = z.union([
+  attachmentSchema,
+  z.object({ data: attachmentSchema }).transform(({ data }) => data),
+]);
+
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+const CONTENT_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.csv': 'text/csv',
+  '.json': 'application/json',
+  '.zip': 'application/zip',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
+const contentTypeFor = (fileName: string): string =>
+  CONTENT_TYPES[extname(fileName).toLowerCase()] ?? 'application/octet-stream';
+
+const escapeLinkText = (value: string): string => value.replace(/[[\]\\]/g, '\\$&');
 
 const LIVE_SYNC_TIMEOUT_MS = 10_000;
 const LIVE_CONFIRM_TIMEOUT_MS = 5_000;
@@ -592,6 +636,12 @@ export type AddCommentResult = {
   anchorMissing?: string;
 };
 
+export type UploadAttachmentInput = {
+  pageId: string;
+  filePath: string;
+  altText?: string;
+};
+
 export class DocmostError extends Error {
   status: number | undefined;
 
@@ -778,16 +828,16 @@ export const createDocmostClient = (config: DocmostConfig) => {
   const getToken = (): Promise<string> =>
     tokenPromise ?? setTokenPromise(readCachedToken().then((cachedToken) => cachedToken ?? login()));
 
-  const post = async <ResponseSchema extends z.ZodType>(
+  const authorizedRequest = async (
     endpoint: string,
-    body: object,
-    responseSchema: ResponseSchema,
-  ): Promise<z.infer<ResponseSchema>> => {
+    headers: Record<string, string>,
+    body: string | FormData,
+  ): Promise<Response> => {
     const send = (token: string) =>
       request(`${config.baseUrl}/api${endpoint}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
+        headers: { ...headers, authorization: `Bearer ${token}` },
+        body,
       });
 
     const usedToken = getToken();
@@ -799,7 +849,15 @@ export const createDocmostClient = (config: DocmostConfig) => {
     if (!response.ok) {
       throw new DocmostError(`Docmost ${endpoint} failed (${response.status}): ${await readErrorMessage(response)}`, response.status);
     }
+    return response;
+  };
 
+  const post = async <ResponseSchema extends z.ZodType>(
+    endpoint: string,
+    body: object,
+    responseSchema: ResponseSchema,
+  ): Promise<z.infer<ResponseSchema>> => {
+    const response = await authorizedRequest(endpoint, { 'content-type': 'application/json' }, JSON.stringify(body));
     const envelope = z.object({ data: z.unknown() }).safeParse(await response.json().catch(() => undefined));
     const parsedData = responseSchema.safeParse(envelope.success ? envelope.data.data : undefined);
     if (!parsedData.success) {
@@ -1315,6 +1373,49 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return { page, movedToSpaceRoot: Boolean(trashedPage.parentPageId) && !page.parentPageId };
   };
 
+  const readUploadFile = async (filePath: string) => {
+    const fullPath = resolve(filePath.replace(/^~(?=$|\/)/, homedir()));
+    const fileStats = await stat(fullPath).catch(() => undefined);
+    if (!fileStats) {
+      throw new DocmostError(`No file at ${fullPath}.`);
+    }
+    if (!fileStats.isFile()) {
+      throw new DocmostError(`${fullPath} is not a file.`);
+    }
+    if (fileStats.size > MAX_UPLOAD_BYTES) {
+      throw new DocmostError(`${fullPath} is ${(fileStats.size / 1024 / 1024).toFixed(1)} MB; uploads are limited to 50 MB.`);
+    }
+    return { fullPath, contents: await readFile(fullPath) };
+  };
+
+  const uploadAttachment = async (input: UploadAttachmentInput) => {
+    const { fullPath, contents } = await readUploadFile(input.filePath);
+    const pageId = await resolvePageId(input.pageId);
+    const contentType = contentTypeFor(fullPath);
+    const form = new FormData();
+    form.append('pageId', pageId);
+    form.append('file', new Blob([contents], { type: contentType }), basename(fullPath));
+    const response = await authorizedRequest('/files/upload', {}, form);
+    const parsed = uploadResponseSchema.safeParse(await response.json().catch(() => undefined));
+    if (!parsed.success) {
+      throw new DocmostError(`Unexpected response from Docmost /files/upload: ${z.prettifyError(parsed.error)}`);
+    }
+    const attachment = parsed.data;
+    const mimeType = attachment.mimeType ?? contentType;
+    const path = `/api/files/${attachment.id}/${encodeURIComponent(attachment.fileName)}`;
+    const isImage = mimeType.startsWith('image/');
+    const defaultLabel = isImage ? basename(attachment.fileName, extname(attachment.fileName)) : attachment.fileName;
+    const label = escapeLinkText(input.altText ?? defaultLabel);
+    return {
+      id: attachment.id,
+      fileName: attachment.fileName,
+      mimeType,
+      size: contents.byteLength,
+      url: `${config.baseUrl}${path}`,
+      markdown: isImage ? `![${label}](${path})` : `[${label}](${path})`,
+    };
+  };
+
   return {
     pageUrl,
     listSpaces,
@@ -1333,6 +1434,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
     editComment,
     deleteComment,
     resolveComment,
+    uploadAttachment,
   };
 };
 
