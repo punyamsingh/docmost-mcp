@@ -18,6 +18,7 @@ import {
   type FakeDocmost,
   type FakeMember,
   type FakePage,
+  type FakeSpace,
 } from './fake-docmost.ts';
 
 const SERVER_ENTRY = fileURLToPath(new URL('../build/index.js', import.meta.url));
@@ -54,9 +55,13 @@ export const startServer = async (
 export const startHarness = async (
   t: TestContext,
   pages: FakePage[],
-  options: { collabUrl?: string; comments?: FakeComment[]; members?: FakeMember[] } = {},
+  options: { collabUrl?: string; comments?: FakeComment[]; members?: FakeMember[]; spaces?: FakeSpace[] } = {},
 ) => {
-  const docmost = await startFakeDocmost(pages, { comments: options.comments, members: options.members });
+  const docmost = await startFakeDocmost(pages, {
+    comments: options.comments,
+    members: options.members,
+    spaces: options.spaces,
+  });
   const server = await startServer(docmost.url, { collabUrl: options.collabUrl?.replace('{docmost}', docmost.url) });
   t.after(async () => {
     await server.close();
