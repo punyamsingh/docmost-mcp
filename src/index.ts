@@ -390,6 +390,27 @@ const createServer = (): McpServer => {
     },
     ({ commentId, resolved }) => runTool(async (client) => toJson(await client.resolveComment(commentId, resolved ?? true))),
   );
+
+  server.registerTool(
+    'upload_attachment',
+    {
+      title: 'Upload a file to a Docmost page',
+      description:
+        'Uploads a local image or file of up to 50 MB to a page and returns its URL and a Markdown image or link to place in the page with edit_page or update_page.',
+      inputSchema: {
+        pageId: pageReferenceSchema,
+        filePath: z.string().min(1).describe('Path to the file on the machine running this server; ~ means the home directory.'),
+        altText: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Alt text for an image, or link text for another file; defaults to the file name.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    ({ pageId, filePath, altText }) =>
+      runTool(async (client) => toJson(await client.uploadAttachment({ pageId, filePath, altText }))),
+  );
   return server;
 };
 
