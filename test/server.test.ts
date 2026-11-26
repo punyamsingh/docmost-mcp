@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { startHarness } from './helpers.ts';
 
-test('lists the 13 tools with their annotations and sends the instructions', async (t) => {
+test('lists the 14 tools with their annotations and sends the instructions', async (t) => {
   const { docmost, server } = await startHarness(t, []);
   const { tools } = await server.client.listTools();
   const readOnly = { readOnlyHint: true, openWorldHint: true };
@@ -22,6 +22,7 @@ test('lists the 13 tools with their annotations and sends the instructions', asy
     edit_comment: { ...write, destructiveHint: true, idempotentHint: true },
     delete_comment: { ...write, destructiveHint: true },
     resolve_comment: { ...write, destructiveHint: false, idempotentHint: true },
+    upload_attachment: { ...write, destructiveHint: false },
   });
   assert.match(server.client.getInstructions() ?? '', /Read a page with get_page before changing it/);
   assert.equal(docmost.requests.length, 0);

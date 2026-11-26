@@ -41,6 +41,8 @@ export type FakeComment = {
 
 export type FakeRequest = { endpoint: string; body: Record<string, unknown> };
 
+export type FakeUpload = { fields: string[]; pageId: string; fileName: string; type: string; bytes: Uint8Array };
+
 export type CollabMode = 'normal' | 'notFound' | 'neverSync' | 'rejectToken' | 'readOnly' | 'neverConfirm';
 
 export const EMAIL = 'tester@example.test';
@@ -230,6 +232,7 @@ export const startFakeDocmost = async (
   let spaceAdmin = false;
   let resolveMode: 'updatesHighlight' | 'leavesHighlight' | 'unlicensed' = 'updatesHighlight';
   const requests: FakeRequest[] = [];
+  const uploads: FakeUpload[] = [];
   const validTokens = new Set<string>();
   const collabTokens = new Set<string>();
   const unsavedStates = new Map<string, Uint8Array>();
@@ -583,10 +586,55 @@ export const startFakeDocmost = async (
     send(response, 404, { message: `No fake for ${endpoint}` });
   };
 
+  const handleUpload = async (request: IncomingMessage, token: string | undefined, response: ServerResponse) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    if (token === undefined || !validTokens.has(token)) {
+      send(response, 401, { message: 'Unauthorized' });
+      return;
+    }
+    const form = await new Response(Buffer.concat(chunks), {
+      headers: { 'content-type': request.headers['content-type'] ?? '' },
+    }).formData();
+    const file = form.get('file');
+    const page = findPage(form.get('pageId'));
+    if (!(file instanceof File)) {
+      send(response, 400, { message: 'Failed to upload file' });
+      return;
+    }
+    if (page === undefined) {
+      send(response, 404, { message: 'Page not found' });
+      return;
+    }
+    const id = `attachment-${uploads.length + 1}`;
+    uploads.push({
+      fields: [...form.keys()],
+      pageId: page.id,
+      fileName: file.name,
+      type: file.type,
+      bytes: new Uint8Array(await file.arrayBuffer()),
+    });
+    send(response, 200, {
+      id,
+      fileName: file.name,
+      mimeType: file.type,
+      fileSize: String(file.size),
+      pageId: page.id,
+      url: `${url}/api/files/${id}/${encodeURIComponent(file.name)}`,
+    });
+  };
+
   const handleRest = async (request: IncomingMessage, response: ServerResponse) => {
-    const body = await readBody(request);
     const endpoint = (request.url ?? '').replace(/^\/api/, '');
     const token = request.headers.authorization?.replace(/^Bearer /, '');
+    if (endpoint === '/files/upload') {
+      requests.push({ endpoint, body: {} });
+      await handleUpload(request, token, response);
+      return;
+    }
+    const body = await readBody(request);
     requests.push({ endpoint, body });
     requestHooks.forEach((hook) => hook({ endpoint, body }));
     handle(endpoint, body, token, response);
@@ -600,6 +648,7 @@ export const startFakeDocmost = async (
     requests,
     upgradePaths,
     writes: () => requests.filter((entry) => entry.endpoint === '/pages/update'),
+    uploads: () => uploads,
     loginCount: () => loginCount,
     revokeTokens: () => validTokens.clear(),
     rejectUpdates: (status: number, message: string) => {
