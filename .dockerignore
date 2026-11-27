@@ -1,0 +1,7 @@
+.env
+.session.json
+.git
+.claude
+node_modules
+build
+test

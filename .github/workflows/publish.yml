@@ -52,6 +52,12 @@ jobs:
           git tag "v${{ steps.version.outputs.version }}"
           git push origin "refs/tags/v${{ steps.version.outputs.version }}"
 
+      - name: Create the GitHub release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ steps.version.outputs.version }}" --verify-tag --generate-notes
+
       - name: Check whether this version is already in the MCP Registry
         id: registry
         run: |
