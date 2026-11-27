@@ -302,7 +302,7 @@ test('resolve_comment on a reply is refused and names the thread', async (t) => 
 });
 
 test("edit_comment replaces the account's own comment text, with a mention", async (t) => {
-  const { docmost, server } = await startHarness(t, [launchPage()], { comments: thread(), members: [PRIYA] });
+  const { server } = await startHarness(t, [launchPage()], { comments: thread(), members: [PRIYA] });
 
   assert.deepEqual(resultOf(await server.call('edit_comment', { commentId: 'r2', text: 'Thanks @[Priya Sharma].' })), {
     id: 'r2',

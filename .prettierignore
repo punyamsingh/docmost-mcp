@@ -1,0 +1,4 @@
+build/
+.claude/
+package-lock.json
+*.md

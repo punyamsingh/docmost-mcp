@@ -17,11 +17,8 @@ import {
   EMAIL,
   PASSWORD,
   startFakeDocmost,
-  type FakeComment,
   type FakeDocmost,
-  type FakeMember,
   type FakePage,
-  type FakeSpace,
 } from './fake-docmost.ts';
 
 const SERVER_ENTRY = fileURLToPath(new URL('../build/index.js', import.meta.url));
