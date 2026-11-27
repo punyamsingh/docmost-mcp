@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { basename, extname } from 'node:path';
+import { crc32 } from 'node:zlib';
 import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
 
@@ -51,6 +53,12 @@ export type FakeComment = {
 export type FakeRequest = { endpoint: string; body: Record<string, unknown> };
 
 export type FakeUpload = { fields: string[]; pageId: string; fileName: string; type: string; bytes: Uint8Array };
+
+export type FakeZipEntry = { name: string; contents: Uint8Array };
+
+export type FakeFileTask = { id: string; status: string; errorMessage: string | null; spaceId: string; zip: Buffer };
+
+export type ImportMode = 'succeed' | 'fail' | 'hang';
 
 export type CollabMode = 'normal' | 'notFound' | 'neverSync' | 'rejectToken' | 'readOnly' | 'neverConfirm';
 
@@ -219,6 +227,60 @@ const isDocumentUpdate = (message: Uint8Array): boolean => {
   return messageType === 0 && syncType === 2;
 };
 
+export const makeZip = (entries: FakeZipEntry[]): Buffer => {
+  const parts: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt32LE(crc32(entry.contents), 14);
+    header.writeUInt32LE(entry.contents.byteLength, 18);
+    header.writeUInt32LE(entry.contents.byteLength, 22);
+    header.writeUInt16LE(name.byteLength, 26);
+    const record = Buffer.alloc(46);
+    record.writeUInt32LE(0x02014b50, 0);
+    record.writeUInt32LE(crc32(entry.contents), 16);
+    record.writeUInt32LE(entry.contents.byteLength, 20);
+    record.writeUInt32LE(entry.contents.byteLength, 24);
+    record.writeUInt16LE(name.byteLength, 28);
+    record.writeUInt32LE(offset, 42);
+    parts.push(header, name, Buffer.from(entry.contents));
+    central.push(record, name);
+    offset += header.byteLength + name.byteLength + entry.contents.byteLength;
+  }
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(
+    central.reduce((total, part) => total + part.byteLength, 0),
+    12,
+  );
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, ...central, end]);
+};
+
+// Reads only uncompressed entries and checks each CRC, so a malformed archive fails the import as yauzl would.
+export const readZip = (bytes: Buffer): FakeZipEntry[] | string => {
+  const entries: FakeZipEntry[] = [];
+  let offset = 0;
+  while (offset + 30 <= bytes.byteLength && bytes.readUInt32LE(offset) === 0x04034b50) {
+    const size = bytes.readUInt32LE(offset + 18);
+    const nameLength = bytes.readUInt16LE(offset + 26);
+    const start = offset + 30 + nameLength + bytes.readUInt16LE(offset + 28);
+    const name = bytes.subarray(offset + 30, offset + 30 + nameLength).toString('utf8');
+    const contents = bytes.subarray(start, start + size);
+    if (bytes.readUInt16LE(offset + 8) !== 0 || crc32(contents) !== bytes.readUInt32LE(offset + 14)) {
+      return `invalid entry ${name}`;
+    }
+    entries.push({ name, contents });
+    offset = start + size;
+  }
+  return bytes.readUInt32LE(offset) === 0x02014b50 || entries.length === 0 ? entries : 'invalid zip file';
+};
+
 const readBody = (request: IncomingMessage) =>
   new Promise<Record<string, unknown>>((resolve) => {
     let rawBody = '';
@@ -263,6 +325,10 @@ export const startFakeDocmost = async (
   let updateRejection: { status: number; message: string } | undefined;
   let collabMode: CollabMode = 'normal';
   const requestHooks: ((request: FakeRequest) => void)[] = [];
+  const fileTasks: FakeFileTask[] = [];
+  const importedAttachments: string[] = [];
+  let importMode: ImportMode = 'succeed';
+  let moveRejection: { status: number; message: string } | undefined;
 
   const hang = () => new Promise<void>((resolve) => hanging.push(resolve));
   const findPage = (reference: unknown) => pages.find((page) => page.id === reference || page.slugId === reference);
@@ -784,6 +850,32 @@ export const startFakeDocmost = async (
       send(response, 200, { data: cursorPage(labelled, body) });
       return;
     }
+    if (endpoint === '/spaces/export') {
+      const space = spaces.find((candidate) => candidate.id === body.spaceId);
+      if (!spaceAdmin) {
+        send(response, 403, { message: 'Forbidden' });
+        return;
+      }
+      if (space === undefined) {
+        send(response, 404, { message: 'Space not found' });
+        return;
+      }
+      const roots = pages.filter((page) => !page.deletedAt && page.spaceId === space.id && page.parentPageId === null);
+      sendFile(response, `${space.name}.zip`, makeZip(roots.flatMap((root) => exportEntries(root, '', body.format))));
+      return;
+    }
+    if (endpoint === '/file-tasks/info') {
+      const task = fileTasks.find((candidate) => candidate.id === body.fileTaskId);
+      if (task === undefined) {
+        send(response, 404, { message: 'File task not found' });
+        return;
+      }
+      if (task.status === 'processing' && importMode !== 'hang') {
+        runImport(task);
+      }
+      send(response, 200, { data: fileTaskView(task) });
+      return;
+    }
     if (endpoint.startsWith('/comments/') && endpoint !== '/comments/create') {
       handleComment(endpoint, body, response);
       return;
@@ -897,7 +989,25 @@ export const startFakeDocmost = async (
       send(response, 200, {});
       return;
     }
+    if (endpoint === '/pages/export') {
+      if (page.deletedAt) {
+        send(response, 404, { message: 'Page not found' });
+        return;
+      }
+      const entries = exportEntries(page, '', body.format, body.includeChildren === true);
+      const [entry] = entries;
+      if (body.includeChildren === true || body.includeAttachments === true || entry === undefined) {
+        sendFile(response, `${page.title}.zip`, makeZip(entries));
+        return;
+      }
+      sendFile(response, entry.name, Buffer.from(entry.contents));
+      return;
+    }
     if (endpoint === '/pages/move') {
+      if (moveRejection !== undefined) {
+        send(response, moveRejection.status, { message: moveRejection.message });
+        return;
+      }
       const position = typeof body.position === 'string' ? body.position : '';
       if (position.length < 5 || position.length > 12) {
         send(response, 400, { message: ['position must be between 5 and 12 characters'] });
@@ -981,18 +1091,146 @@ export const startFakeDocmost = async (
     send(response, 404, { message: `No fake for ${endpoint}` });
   };
 
-  const handleUpload = async (request: IncomingMessage, token: string | undefined, response: ServerResponse) => {
+  const sendFile = (response: ServerResponse, fileName: string, contents: Buffer) => {
+    response.writeHead(200, {
+      'content-type': fileName.endsWith('.zip') ? 'application/zip' : 'text/plain',
+      'content-disposition': `attachment; filename="${encodeURIComponent(fileName)}"`,
+    });
+    response.end(contents);
+  };
+
+  const exportEntries = (page: FakePage, folder: string, format: unknown, withChildren = true): FakeZipEntry[] => {
+    const extension = format === 'html' ? '.html' : '.md';
+    const body =
+      format === 'html' ? `<h1>${page.title}</h1>\n<p>${page.markdown}</p>` : `# ${page.title}\n\n${page.markdown}`;
+    const children = withChildren ? pages.filter((child) => !child.deletedAt && child.parentPageId === page.id) : [];
+    return [
+      { name: `${folder}${page.title}${extension}`, contents: Buffer.from(body) },
+      ...children.flatMap((child) => exportEntries(child, `${folder}${page.title}/`, format)),
+    ];
+  };
+
+  const fileTaskView = ({ zip: _zip, ...task }: FakeFileTask) => ({
+    ...task,
+    type: 'import',
+    source: 'generic',
+    pageId: null,
+  });
+
+  const importPage = (name: string, markdown: string, spaceId: string, parentPageId: string | null) => {
+    const heading = /^# (.+)\n*/.exec(markdown);
+    const page = makePage({
+      id: `imported${pages.length + 1}`,
+      title: heading?.[1] ?? name,
+      spaceId,
+      parentPageId,
+      markdown: heading ? markdown.slice(heading[0].length) : markdown,
+    });
+    touch(page);
+    pages.push(page);
+    return page;
+  };
+
+  // Docmost's generic zip import: one top folder is dropped, folders become pages, and other files are attachments.
+  const runImport = (task: FakeFileTask) => {
+    const entries = readZip(task.zip);
+    if (importMode === 'fail' || typeof entries === 'string') {
+      task.status = 'failed';
+      task.errorMessage = typeof entries === 'string' ? entries : 'File import failed: Unexpected end of archive';
+      return;
+    }
+    const files = entries.filter((entry) => !entry.name.endsWith('/') && !entry.name.startsWith('__MACOSX/'));
+    const isPageFile = (name: string) => ['.md', '.html'].includes(extname(name).toLowerCase());
+    const pageFiles = new Map(
+      files.filter((file) => isPageFile(file.name)).map((file) => [file.name, Buffer.from(file.contents).toString()]),
+    );
+    const topFolders = new Set([...pageFiles.keys()].map((name) => name.split('/')[0]));
+    const skippedFolder =
+      [...pageFiles.keys()].every((name) => name.includes('/')) && topFolders.size === 1
+        ? [...topFolders][0]
+        : undefined;
+    for (const name of [...pageFiles.keys()]) {
+      const segments = name.split('/').slice(0, -1);
+      segments.forEach((_, index) => {
+        const folder = segments.slice(0, index + 1).join('/');
+        if (folder !== skippedFolder && !pageFiles.has(`${folder}.md`) && !pageFiles.has(`${folder}.html`)) {
+          pageFiles.set(`${folder}.md`, '');
+        }
+      });
+    }
+    const idByFile = new Map<string, string>();
+    const byDepth = [...pageFiles.keys()].sort((first, second) => first.split('/').length - second.split('/').length);
+    for (const name of byDepth) {
+      const segments = name.split('/').slice(0, -1);
+      let parentPageId: string | null = null;
+      for (; segments.length > 0 && parentPageId === null; segments.pop()) {
+        parentPageId = idByFile.get(`${segments.join('/')}.md`) ?? idByFile.get(`${segments.join('/')}.html`) ?? null;
+      }
+      const page = importPage(basename(name, extname(name)), pageFiles.get(name) ?? '', task.spaceId, parentPageId);
+      idByFile.set(name, page.id);
+    }
+    importedAttachments.push(...files.filter((file) => !isPageFile(file.name)).map((file) => file.name));
+    task.status = 'success';
+  };
+
+  const readForm = async (request: IncomingMessage) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) {
       chunks.push(Buffer.from(chunk));
     }
+    return new Response(Buffer.concat(chunks), {
+      headers: { 'content-type': request.headers['content-type'] ?? '' },
+    }).formData();
+  };
+
+  const handleImport = async (endpoint: string, form: FormData, response: ServerResponse) => {
+    const file = form.get('file');
+    const spaceId = form.get('spaceId');
+    if (!(file instanceof File)) {
+      send(response, 400, { message: 'Failed to upload file' });
+      return;
+    }
+    const extension = extname(file.name).toLowerCase();
+    if (endpoint === '/pages/import-zip') {
+      if (extension !== '.zip') {
+        send(response, 400, { message: 'Invalid import file extension.' });
+        return;
+      }
+      if (form.get('source') !== 'generic') {
+        send(response, 400, { message: 'Invalid import source.' });
+        return;
+      }
+    } else if (!['.md', '.html', '.docx', '.pdf'].includes(extension)) {
+      send(response, 400, { message: 'Invalid import file type.' });
+      return;
+    }
+    if (typeof spaceId !== 'string' || !spaces.some((space) => space.id === spaceId)) {
+      send(response, 400, { message: 'spaceId is required' });
+      return;
+    }
+    const contents = Buffer.from(await file.arrayBuffer());
+    if (endpoint === '/pages/import') {
+      const page = importPage(basename(file.name, extension), contents.toString(), spaceId, null);
+      send(response, 200, { data: pageInfo(page, undefined) });
+      return;
+    }
+    const task: FakeFileTask = {
+      id: `file-task-${fileTasks.length + 1}`,
+      status: 'processing',
+      errorMessage: null,
+      spaceId,
+      zip: contents,
+    };
+    fileTasks.push(task);
+    send(response, 200, { data: fileTaskView(task) });
+  };
+
+  const handleUpload = async (request: IncomingMessage, token: string | undefined, response: ServerResponse) => {
+    const form = await readForm(request);
     if (token === undefined || !validTokens.has(token)) {
       send(response, 401, { message: 'Unauthorized' });
       return;
     }
-    const form = await new Response(Buffer.concat(chunks), {
-      headers: { 'content-type': request.headers['content-type'] ?? '' },
-    }).formData();
     const file = form.get('file');
     const page = findPage(form.get('pageId'));
     if (!(file instanceof File)) {
@@ -1027,6 +1265,21 @@ export const startFakeDocmost = async (
     if (endpoint === '/files/upload') {
       requests.push({ endpoint, body: {} });
       await handleUpload(request, token, response);
+      return;
+    }
+    if (endpoint === '/pages/import' || endpoint === '/pages/import-zip') {
+      const form = await readForm(request);
+      requests.push({
+        endpoint,
+        body: Object.fromEntries(
+          [...form.entries()].map(([name, value]) => [name, typeof value === 'string' ? value : value.name]),
+        ),
+      });
+      if (token === undefined || !validTokens.has(token)) {
+        send(response, 401, { message: 'Unauthorized' });
+        return;
+      }
+      await handleImport(endpoint, form, response);
       return;
     }
     const body = await readBody(request);
@@ -1094,6 +1347,15 @@ export const startFakeDocmost = async (
     removeEndpoints: (...endpoints: string[]) => {
       endpoints.forEach((endpoint) => missingEndpoints.add(endpoint));
     },
+    setImportMode: (mode: ImportMode) => {
+      importMode = mode;
+    },
+    rejectMoves: (status: number, message: string) => {
+      moveRejection = { status, message };
+    },
+    fileTasks: () => fileTasks,
+    importedAttachments: () => importedAttachments,
+    pages: () => pages,
     setResolveMode: (mode: 'updatesHighlight' | 'leavesHighlight' | 'unlicensed') => {
       resolveMode = mode;
     },

@@ -176,6 +176,24 @@ const commentWriteAnnotations = {
   openWorldHint: true,
 };
 
+const exportFormatSchema = z.enum(['markdown', 'html']).describe('File format of the exported pages.');
+
+const outputPathSchema = z
+  .string()
+  .min(1)
+  .describe(
+    "File path on the machine running this server, or an existing folder to save under Docmost's file name; ~ means the home directory.",
+  );
+
+const overwriteSchema = z.boolean().optional().describe('Replace an existing file at that path; defaults to false.');
+
+const exportAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+
 const createServer = (): McpServer => {
   const server = new McpServer(
     { name: 'docmost', version: packageVersion },
@@ -992,6 +1010,80 @@ const createServer = (): McpServer => {
     },
     ({ pageId, filePath, altText }) =>
       runTool(async (client) => toJson(await client.uploadAttachment({ pageId, filePath, altText }))),
+  );
+
+  server.registerTool(
+    'export_page',
+    {
+      title: 'Export a Docmost page to a file',
+      description:
+        'Saves a page as a Markdown or HTML file, or as a .zip when it includes subpages or attachments, to a path on the machine running this server and returns the path and size.',
+      inputSchema: {
+        pageId: pageReferenceSchema,
+        format: exportFormatSchema,
+        includeChildren: z
+          .boolean()
+          .optional()
+          .describe('Include the subpages, which makes a .zip; defaults to false.'),
+        includeAttachments: z
+          .boolean()
+          .optional()
+          .describe('Include images and attached files, which makes a .zip; defaults to false.'),
+        outputPath: outputPathSchema,
+        overwrite: overwriteSchema,
+      },
+      annotations: exportAnnotations,
+    },
+    ({ pageId, format, includeChildren, includeAttachments, outputPath, overwrite }) =>
+      runTool(async (client) =>
+        toJson(await client.exportPage({ pageId, format, includeChildren, includeAttachments, outputPath, overwrite })),
+      ),
+  );
+
+  server.registerTool(
+    'export_space',
+    {
+      title: 'Export a Docmost space to a file',
+      description:
+        'Saves every page of a space as a .zip of Markdown or HTML files to a path on the machine running this server, which needs space admin rights, and returns the path and size.',
+      inputSchema: {
+        spaceId: z.string().min(1).describe('Space id from list_spaces.'),
+        format: exportFormatSchema,
+        includeAttachments: z.boolean().optional().describe('Include images and attached files; defaults to false.'),
+        outputPath: outputPathSchema,
+        overwrite: overwriteSchema,
+      },
+      annotations: exportAnnotations,
+    },
+    ({ spaceId, format, includeAttachments, outputPath, overwrite }) =>
+      runTool(async (client) =>
+        toJson(await client.exportSpace({ spaceId, format, includeAttachments, outputPath, overwrite })),
+      ),
+  );
+
+  server.registerTool(
+    'import_pages',
+    {
+      title: 'Import files into Docmost',
+      description:
+        "Creates pages from a .md or .html file, a .zip, or a folder of them on the machine running this server through Docmost's importer, which nests pages by folder, links pages and uploads images, at the space root or under parentPageId.",
+      inputSchema: {
+        path: z
+          .string()
+          .min(1)
+          .describe(
+            'Path to a .md, .html or .zip file or a folder on the machine running this server; ~ means the home directory.',
+          ),
+        spaceId: z
+          .string()
+          .optional()
+          .describe('Space id from list_spaces; may be omitted when parentPageId is given.'),
+        parentPageId: pageReferenceSchema.optional().describe('Put the imported pages under this page.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    ({ path, spaceId, parentPageId }) =>
+      runTool(async (client) => toJson(await client.importPages({ path, spaceId, parentPageId }))),
   );
   return server;
 };

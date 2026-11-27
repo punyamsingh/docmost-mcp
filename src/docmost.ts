@@ -1,8 +1,10 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, extname, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
+import { crc32 } from 'node:zlib';
 import { z } from 'zod';
 import {
   LiveRefusedError,
@@ -241,6 +243,93 @@ const CONTENT_TYPES: Record<string, string> = {
 
 const contentTypeFor = (fileName: string): string =>
   CONTENT_TYPES[extname(fileName).toLowerCase()] ?? 'application/octet-stream';
+
+type ZipEntry = { name: string; contents: Buffer };
+
+const DOS_DATE_1980_01_01 = 0x21;
+const UTF8_NAMES_FLAG = 0x0800;
+
+const zipStored = (entries: ZipEntry[]) => {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const checksum = crc32(entry.contents);
+    const size = entry.contents.byteLength;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(UTF8_NAMES_FLAG, 6);
+    local.writeUInt16LE(DOS_DATE_1980_01_01, 12);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(size, 18);
+    local.writeUInt32LE(size, 22);
+    local.writeUInt16LE(name.byteLength, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(UTF8_NAMES_FLAG, 8);
+    central.writeUInt16LE(DOS_DATE_1980_01_01, 14);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(size, 20);
+    central.writeUInt32LE(size, 24);
+    central.writeUInt16LE(name.byteLength, 28);
+    central.writeUInt32LE(offset, 42);
+    localParts.push(local, name, entry.contents);
+    centralParts.push(central, name);
+    offset += local.byteLength + name.byteLength + size;
+  }
+  const centralSize = centralParts.reduce((total, part) => total + part.byteLength, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, ...centralParts, end]);
+};
+
+const localPath = (filePath: string): string => resolve(filePath.replace(/^~(?=$|\/)/, homedir()));
+
+const readFolderEntries = async (folder: string, zipFolder: string): Promise<ZipEntry[]> => {
+  const entries: ZipEntry[] = [];
+  for (const item of await readdir(folder, { withFileTypes: true })) {
+    const itemPath = join(folder, item.name);
+    const name = `${zipFolder}/${item.name}`;
+    if (item.name.startsWith('.')) {
+      continue;
+    }
+    if (item.isDirectory()) {
+      entries.push(...(await readFolderEntries(itemPath, name)));
+    } else if (item.isFile()) {
+      entries.push({ name, contents: await readFile(itemPath) });
+    }
+  }
+  return entries;
+};
+
+const dispositionFileName = (header: string | null): string | undefined => {
+  const encodedName = header?.match(/filename="([^"]+)"/)?.[1];
+  if (encodedName === undefined) {
+    return undefined;
+  }
+  try {
+    return basename(decodeURIComponent(encodedName));
+  } catch {
+    return basename(encodedName);
+  }
+};
+
+const MAX_PAGE_IMPORT_BYTES = 30 * 1024 * 1024;
+const PAGE_IMPORT_TYPES = new Set(['.md', '.html']);
+const ENTERPRISE_IMPORT_TYPES = new Set(['.docx', '.pdf']);
+const IMPORT_POLL_MS = 2_000;
+
+const fileTaskSchema = z.object({ id: z.string(), status: z.string(), errorMessage: z.string().nullish() });
+
+const importedPageSchema = z.object({ id: z.string(), slugId: z.string(), title: z.string().nullish() });
 
 const escapeLinkText = (value: string): string => value.replace(/[[\]\\]/g, '\\$&');
 
@@ -903,6 +992,31 @@ export type UploadAttachmentInput = {
   altText?: string;
 };
 
+export type ExportFormat = 'markdown' | 'html';
+
+export type ExportPageInput = {
+  pageId: string;
+  format: ExportFormat;
+  includeChildren?: boolean;
+  includeAttachments?: boolean;
+  outputPath: string;
+  overwrite?: boolean;
+};
+
+export type ExportSpaceInput = {
+  spaceId: string;
+  format: ExportFormat;
+  includeAttachments?: boolean;
+  outputPath: string;
+  overwrite?: boolean;
+};
+
+export type ImportPagesInput = {
+  path: string;
+  spaceId?: string;
+  parentPageId?: string;
+};
+
 export class DocmostError extends Error {
   status: number | undefined;
 
@@ -1121,10 +1235,13 @@ export const createDocmostClient = (config: DocmostConfig) => {
 
   const post = async <ResponseSchema extends z.ZodType>(
     endpoint: string,
-    body: object,
+    body: object | FormData,
     responseSchema: ResponseSchema,
   ): Promise<z.infer<ResponseSchema>> => {
-    const response = await authorizedRequest(endpoint, { 'content-type': 'application/json' }, JSON.stringify(body));
+    const response =
+      body instanceof FormData
+        ? await authorizedRequest(endpoint, {}, body)
+        : await authorizedRequest(endpoint, { 'content-type': 'application/json' }, JSON.stringify(body));
     const envelope = z.object({ data: z.unknown() }).safeParse(await response.json().catch(() => undefined));
     const parsedData = responseSchema.safeParse(envelope.success ? envelope.data.data : undefined);
     if (!parsedData.success) {
@@ -1876,7 +1993,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
   };
 
   const readUploadFile = async (filePath: string) => {
-    const fullPath = resolve(filePath.replace(/^~(?=$|\/)/, homedir()));
+    const fullPath = localPath(filePath);
     const fileStats = await stat(fullPath).catch(() => undefined);
     if (!fileStats) {
       throw new DocmostError(`No file at ${fullPath}.`);
@@ -1920,6 +2037,188 @@ export const createDocmostClient = (config: DocmostConfig) => {
     };
   };
 
+  const refuseExistingFile = (filePath: string) =>
+    new DocmostError(
+      `Refused: ${filePath} already exists; pass overwrite: true to replace it, or choose another outputPath. Nothing was written.`,
+    );
+
+  const saveExport = async (endpoint: string, body: object, outputPath: string, overwrite: boolean) => {
+    const target = localPath(outputPath);
+    const targetStats = await stat(target).catch(() => undefined);
+    if (targetStats?.isFile() && !overwrite) {
+      throw refuseExistingFile(target);
+    }
+    const response = await authorizedRequest(endpoint, { 'content-type': 'application/json' }, JSON.stringify(body));
+    const contents = Buffer.from(await response.arrayBuffer());
+    let filePath = target;
+    if (targetStats?.isDirectory() ?? /[/\\]$/.test(outputPath)) {
+      const fileName = dispositionFileName(response.headers.get('content-disposition'));
+      if (fileName === undefined) {
+        throw new DocmostError(`Docmost ${endpoint} sent no file name; pass a file path as outputPath.`);
+      }
+      filePath = join(target, fileName);
+    }
+    await mkdir(dirname(filePath), { recursive: true });
+    try {
+      await writeFile(filePath, contents, { flag: overwrite ? 'w' : 'wx' });
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+        throw refuseExistingFile(filePath);
+      }
+      throw error;
+    }
+    return { path: filePath, bytes: contents.byteLength };
+  };
+
+  const exportPage = async (input: ExportPageInput) => {
+    const includeChildren = input.includeChildren ?? false;
+    const saved = await saveExport(
+      '/pages/export',
+      {
+        pageId: await resolvePageId(input.pageId),
+        format: input.format,
+        includeChildren,
+        includeAttachments: input.includeAttachments ?? false,
+      },
+      input.outputPath,
+      input.overwrite ?? false,
+    );
+    return { ...saved, format: input.format, includesChildren: includeChildren };
+  };
+
+  const exportSpace = async (input: ExportSpaceInput) => {
+    try {
+      const saved = await saveExport(
+        '/spaces/export',
+        { spaceId: input.spaceId, format: input.format, includeAttachments: input.includeAttachments ?? false },
+        input.outputPath,
+        input.overwrite ?? false,
+      );
+      return { ...saved, format: input.format };
+    } catch (error) {
+      if (error instanceof DocmostError && error.status === 403) {
+        throw new DocmostError(
+          `Refused: exporting a space needs space admin rights, and the space must allow exports (${error.message}). Nothing was written.`,
+        );
+      }
+      throw error;
+    }
+  };
+
+  const readImportSource = async (fullPath: string) => {
+    const pathStats = await stat(fullPath).catch(() => undefined);
+    if (!pathStats) {
+      throw new DocmostError(`Refused: nothing at ${fullPath}. Nothing was created.`);
+    }
+    if (pathStats.isDirectory()) {
+      const entries = await readFolderEntries(fullPath, basename(fullPath));
+      if (!entries.some((entry) => PAGE_IMPORT_TYPES.has(extname(entry.name).toLowerCase()))) {
+        throw new DocmostError(`Refused: ${fullPath} holds no .md or .html files. Nothing was created.`);
+      }
+      return { name: `${basename(fullPath)}.zip`, contents: zipStored(entries), isZip: true };
+    }
+    const extension = extname(fullPath).toLowerCase();
+    if (ENTERPRISE_IMPORT_TYPES.has(extension)) {
+      throw new DocmostError(
+        `Refused: importing ${extension} files needs Docmost Enterprise; convert it to Markdown or HTML first. Nothing was created.`,
+      );
+    }
+    if (!pathStats.isFile() || (extension !== '.zip' && !PAGE_IMPORT_TYPES.has(extension))) {
+      throw new DocmostError(
+        `Refused: import_pages takes a .md, .html or .zip file or a folder, not ${fullPath}. Nothing was created.`,
+      );
+    }
+    if (extension !== '.zip' && pathStats.size > MAX_PAGE_IMPORT_BYTES) {
+      throw new DocmostError(
+        `Refused: ${fullPath} is ${(pathStats.size / 1024 / 1024).toFixed(1)} MB; Docmost imports single pages of up to 30 MB. Nothing was created.`,
+      );
+    }
+    return { name: basename(fullPath), contents: await readFile(fullPath), isZip: extension === '.zip' };
+  };
+
+  const importZip = async (spaceId: string, name: string, contents: Blob) => {
+    const rootPagesBefore = new Set((await listChildPages({ spaceId })).items.map((page) => page.id));
+    const form = new FormData();
+    form.append('spaceId', spaceId);
+    form.append('source', 'generic');
+    form.append('file', contents, name);
+    let task = await post('/pages/import-zip', form, fileTaskSchema);
+    const deadline = Date.now() + config.importWaitMs;
+    while (task.status === 'processing' && Date.now() < deadline) {
+      await sleep(Math.min(IMPORT_POLL_MS, deadline - Date.now()));
+      task = await post('/file-tasks/info', { fileTaskId: task.id }, fileTaskSchema);
+    }
+    if (task.status === 'processing') {
+      return { fileTaskId: task.id };
+    }
+    if (task.status !== 'success') {
+      throw new DocmostError(
+        `Docmost could not import ${name}: ${task.errorMessage ?? `task ended as ${task.status}`}. Nothing was created.`,
+      );
+    }
+    // Docmost's file task does not record the pages it created, so the new space-root pages are the import's roots.
+    const rootPages = (await listChildPages({ spaceId })).items.filter((page) => !rootPagesBefore.has(page.id));
+    return { rootPages };
+  };
+
+  const importPages = async (input: ImportPagesInput) => {
+    const source = await readImportSource(localPath(input.path));
+    const parentPage = input.parentPageId === undefined ? undefined : await getPage(input.parentPageId);
+    if (parentPage && input.spaceId && input.spaceId !== parentPage.spaceId) {
+      throw new DocmostError(
+        `Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}. Nothing was created.`,
+      );
+    }
+    const spaceId = parentPage?.spaceId ?? input.spaceId;
+    if (!spaceId) {
+      throw new DocmostError('Provide spaceId, parentPageId, or both.');
+    }
+
+    let rootPages: { id: string; slugId: string; title?: string | null; hasChildren?: boolean | null }[];
+    if (source.isZip) {
+      const imported = await importZip(spaceId, source.name, new Blob([source.contents], { type: 'application/zip' }));
+      if ('fileTaskId' in imported) {
+        return {
+          fileTaskId: imported.fileTaskId,
+          stillImporting: `Docmost is still importing ${source.name} after ${config.importWaitMs / 1000} s; its pages will appear at the end of the space's root pages${parentPage ? `, not under ${parentPage.title ?? parentPage.id}` : ''}.`,
+        };
+      }
+      rootPages = imported.rootPages;
+    } else {
+      const form = new FormData();
+      form.append('spaceId', spaceId);
+      form.append('file', new Blob([source.contents], { type: contentTypeFor(source.name) }), source.name);
+      rootPages = [await post('/pages/import', form, importedPageSchema)];
+    }
+
+    const pages = await Promise.all(
+      rootPages.map(async (rootPage) => ({
+        id: rootPage.id,
+        title: rootPage.title ?? null,
+        url: pageUrl(rootPage.slugId),
+        children: rootPage.hasChildren ? (await listChildPages({ parentPageId: rootPage.id })).items.length : 0,
+      })),
+    );
+    if (parentPage === undefined) {
+      return { pages };
+    }
+    let movedCount = 0;
+    try {
+      for (const rootPage of rootPages) {
+        await movePage({ pageId: rootPage.id, parentPageId: parentPage.id });
+        movedCount += 1;
+      }
+      return { pages, movedUnder: parentPage.id };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        pages,
+        moved: false,
+        moveFailed: `The pages were imported at the space root, and ${movedCount} of ${rootPages.length} moved under ${parentPage.title ?? parentPage.id} before a move failed: ${reason}`,
+      };
+    }
+  };
+
   return {
     pageUrl,
     listSpaces,
@@ -1952,6 +2251,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
     deleteComment,
     resolveComment,
     uploadAttachment,
+    exportPage,
+    exportSpace,
+    importPages,
   };
 };
 

@@ -59,6 +59,9 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `delete_comment` | Permanently deletes a comment and removes its highlight; a whole thread needs `deleteReplies` |
 | `resolve_comment` | Resolves or reopens a thread, on Docmost instances licensed for it |
 | `upload_attachment` | Uploads a local image or file (up to 50 MB) to a page and returns a Markdown image or link to place with `edit_page` or `update_page` |
+| `export_page` | Saves a page as a Markdown or HTML file, or as a `.zip` with its subpages or attachments, and returns the path and size |
+| `export_space` | Saves a whole space as a `.zip` of Markdown or HTML files; needs space admin rights |
+| `import_pages` | Creates pages from a `.md` or `.html` file, a `.zip`, or a folder, at the space root or under a parent page |
 
 Every tool that takes a page accepts a page id, a slug id, or the page URL copied from the browser.
 
@@ -73,6 +76,10 @@ Otherwise, for example when the new text has Markdown formatting or the match cr
 A whole-body rewrite can't be merged, so it is refused while someone with the page open has typing that Docmost hasn't saved yet; retry a minute later. Append and prepend are merged by Docmost, so they always go through.
 
 `restore_page_revision` undoes changes by putting a revision from `list_page_history` back, the way Docmost's own Restore button does. It sends the revision in Docmost's editor format rather than Markdown, so nothing is lost, and takes `expectedUpdatedAt` like a replace. Like a rewrite, it is refused while someone has unsaved typing open, and on a page in the trash. Comments added since the revision keep their thread but lose their highlight in the text; the result's `commentHighlightsRemoved` says how many.
+
+### Exports and imports
+
+Paths are on the machine running the server, which over HTTP is not the client's machine. An export given an existing folder saves under Docmost's file name, and refuses to replace a file unless `overwrite: true`. `import_pages` uses Docmost's own importer, which turns relative links into page links and uploads the images they point to; a folder is zipped first, and each subfolder becomes a page holding its files' pages. A single file must be under 30 MB, and `.docx` and `.pdf` need Docmost Enterprise. The server waits up to 2 minutes for a `.zip` or folder import, or `DOCMOST_IMPORT_WAIT_SECONDS`, then returns the import's task id if it is still running. With `parentPageId` the new pages are moved under that page; if the move fails they stay at the space root and the result says `moved: false` and why.
 
 ### Comments
 
@@ -194,6 +201,7 @@ The server still logs in to Docmost with its own `DOCMOST_*` variables, so every
 - Docmost returns revisions only as editor JSON, so `get_page_revision` converts them to Markdown itself; content Markdown can't hold, such as diagrams or embeds, comes back as a link or is left out.
 - Accounts with MFA cannot log in, because the server has no way to complete the second factor.
 - When the collaboration websocket can't be reached, `edit_page` falls back to writing the saved page. Docmost saves what people type 10 to 45 seconds after they type it, so in that case text typed in that window by someone with the page open can be lost.
+- Docmost's import task doesn't record the pages it created, so `import_pages` takes the space's new root pages as the import's. A root page someone else creates in that space during the import is reported, and moved under `parentPageId`, with it.
 - Before a whole-body rewrite the server compares the live text with the saved text, not formatting, so bold or colour added in the last 45 seconds without typing can still be lost by a rewrite.
 
 ## License
