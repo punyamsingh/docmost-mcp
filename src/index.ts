@@ -72,9 +72,19 @@ const pageReferenceSchema = z
   .min(1)
   .describe('Page id, slug id, or the full page URL copied from the browser.');
 
-const listLimitSchema = z.number().int().min(1).max(100).optional().describe('Maximum results to return; defaults to 20.');
+const listLimitSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(100)
+  .optional()
+  .describe('Maximum results to return; defaults to 20.');
 
-const cursorSchema = z.string().min(1).optional().describe('nextCursor from the previous call, to fetch the next results.');
+const cursorSchema = z
+  .string()
+  .min(1)
+  .optional()
+  .describe('nextCursor from the previous call, to fetch the next results.');
 
 const readOnlyAnnotations = { readOnlyHint: true, openWorldHint: true };
 
@@ -83,9 +93,16 @@ const commentIdSchema = z.string().min(1).describe('Comment id from list_comment
 const commentTextSchema = z
   .string()
   .min(1)
-  .describe('Plain-text comment; blank lines start new paragraphs, and @[Full Name] mentions a member, which notifies them.');
+  .describe(
+    'Plain-text comment; blank lines start new paragraphs, and @[Full Name] mentions a member, which notifies them.',
+  );
 
-const commentWriteAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+const commentWriteAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+};
 
 const createServer = (): McpServer => {
   const server = new McpServer(
@@ -127,7 +144,9 @@ const createServer = (): McpServer => {
         if (!spaceId && !parentPageId) {
           throw new Error('Provide spaceId or parentPageId.');
         }
-        const { items, complete } = await client.listChildPages(parentPageId ? { parentPageId } : { spaceId: spaceId ?? '' });
+        const { items, complete } = await client.listChildPages(
+          parentPageId ? { parentPageId } : { spaceId: spaceId ?? '' },
+        );
         return listResult(
           items.map((page) => ({
             id: page.id,
@@ -152,7 +171,12 @@ const createServer = (): McpServer => {
         query: z.string().min(1).max(200).describe('Words to search for.'),
         spaceId: z.string().optional().describe('Restrict the search to this space id.'),
         limit: z.number().int().min(1).max(100).optional().describe('Maximum results to return; defaults to 20.'),
-        offset: z.number().int().min(0).optional().describe('Number of results to skip, for the next page of results; defaults to 0.'),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Number of results to skip, for the next page of results; defaults to 0.'),
       },
       annotations: readOnlyAnnotations,
     },
@@ -218,7 +242,8 @@ const createServer = (): McpServer => {
     'list_page_history',
     {
       title: 'List Docmost page history',
-      description: "Lists a page's saved revisions, newest first, with each revision's id, title, author, contributors and time.",
+      description:
+        "Lists a page's saved revisions, newest first, with each revision's id, title, author, contributors and time.",
       inputSchema: { pageId: pageReferenceSchema, limit: listLimitSchema, cursor: cursorSchema },
       annotations: readOnlyAnnotations,
     },
@@ -230,7 +255,9 @@ const createServer = (): McpServer => {
             historyId: revision.id,
             title: revision.title ?? null,
             author: revision.lastUpdatedBy?.name ?? null,
-            contributors: (revision.contributors ?? []).flatMap((contributor) => (contributor.name ? [contributor.name] : [])),
+            contributors: (revision.contributors ?? []).flatMap((contributor) =>
+              contributor.name ? [contributor.name] : [],
+            ),
             createdAt: revision.createdAt,
           })),
           nextCursor,
@@ -242,7 +269,8 @@ const createServer = (): McpServer => {
     'get_page_revision',
     {
       title: 'Read a Docmost page revision',
-      description: 'Returns a window of one saved revision of a page as Markdown along with its title, author, time and line counts.',
+      description:
+        'Returns a window of one saved revision of a page as Markdown along with its title, author, time and line counts.',
       inputSchema: {
         historyId: z.string().min(1).describe('Revision id from list_page_history.'),
         offset: z.number().int().min(1).optional().describe('First line to return, starting at 1; defaults to 1.'),
@@ -298,7 +326,11 @@ const createServer = (): McpServer => {
         const { page, revision, ...result } = await client.restorePageRevision({ historyId, expectedUpdatedAt });
         return toJson({
           ...summarizePage(client, page),
-          restoredFrom: { historyId: revision.id, createdAt: revision.createdAt, author: revision.lastUpdatedBy?.name ?? null },
+          restoredFrom: {
+            historyId: revision.id,
+            createdAt: revision.createdAt,
+            author: revision.lastUpdatedBy?.name ?? null,
+          },
           ...result,
         });
       }),
@@ -308,7 +340,8 @@ const createServer = (): McpServer => {
     'list_recent_pages',
     {
       title: 'List recent Docmost pages',
-      description: 'Lists the most recently updated pages across the spaces this account belongs to, or within one space, newest first.',
+      description:
+        'Lists the most recently updated pages across the spaces this account belongs to, or within one space, newest first.',
       inputSchema: {
         spaceId: z.string().optional().describe('Restrict the list to this space id.'),
         limit: listLimitSchema,
@@ -340,7 +373,8 @@ const createServer = (): McpServer => {
     'get_page_breadcrumbs',
     {
       title: 'Get Docmost page breadcrumbs',
-      description: 'Returns the path from the space root down to a page, listing each ancestor and then the page itself.',
+      description:
+        'Returns the path from the space root down to a page, listing each ancestor and then the page itself.',
       inputSchema: { pageId: pageReferenceSchema },
       annotations: readOnlyAnnotations,
     },
@@ -368,7 +402,9 @@ const createServer = (): McpServer => {
         title: z.string().min(1).describe('Page title.'),
         markdown: z.string().describe('Page body in Markdown; do not repeat the title as a leading # heading.'),
         spaceId: z.string().optional().describe('Space id from list_spaces; optional when parentPageId is given.'),
-        parentPageId: pageReferenceSchema.optional().describe('Create the page under this page instead of at the space root.'),
+        parentPageId: pageReferenceSchema
+          .optional()
+          .describe('Create the page under this page instead of at the space root.'),
         icon: z.string().optional().describe('Optional emoji shown next to the title.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -426,7 +462,10 @@ const createServer = (): McpServer => {
         'Replaces an exact piece of text in a page, changing plain text in the live document so it merges with anyone editing and keeps comments, mentions and formatting, with Docmost saving it within 45 seconds, and rewriting the whole body from Markdown only when the change needs Markdown.',
       inputSchema: {
         pageId: pageReferenceSchema,
-        oldText: z.string().min(1).describe('Exact text to replace, copied from get_page output; must match once unless replaceAll is set.'),
+        oldText: z
+          .string()
+          .min(1)
+          .describe('Exact text to replace, copied from get_page output; must match once unless replaceAll is set.'),
         newText: z.string().describe('Replacement Markdown; an empty string deletes oldText.'),
         replaceAll: z.boolean().optional().describe('Replace every occurrence of oldText; defaults to false.'),
       },
@@ -452,7 +491,9 @@ const createServer = (): McpServer => {
         'Moves a page and its subpages under another page or to the root of a space, including into another space, placing it last among its new siblings.',
       inputSchema: {
         pageId: pageReferenceSchema,
-        parentPageId: pageReferenceSchema.optional().describe('Move the page under this page, in whichever space it is.'),
+        parentPageId: pageReferenceSchema
+          .optional()
+          .describe('Move the page under this page, in whichever space it is.'),
         spaceId: z
           .string()
           .optional()
@@ -481,7 +522,11 @@ const createServer = (): McpServer => {
     ({ pageId }) =>
       runTool(async (client) => {
         const { page, alreadyInTrash } = await client.deletePage(pageId);
-        return toJson({ ...summarizePage(client, page), inTrash: true, ...(alreadyInTrash ? { note: 'The page was already in the trash.' } : {}) });
+        return toJson({
+          ...summarizePage(client, page),
+          inTrash: true,
+          ...(alreadyInTrash ? { note: 'The page was already in the trash.' } : {}),
+        });
       }),
   );
 
@@ -499,7 +544,9 @@ const createServer = (): McpServer => {
         const { page, movedToSpaceRoot } = await client.restorePage(pageId);
         return toJson({
           ...summarizePage(client, page),
-          ...(movedToSpaceRoot ? { note: 'Restored to the space root because its parent page is still in the trash.' } : {}),
+          ...(movedToSpaceRoot
+            ? { note: 'Restored to the space root because its parent page is still in the trash.' }
+            : {}),
         });
       }),
   );
@@ -508,7 +555,8 @@ const createServer = (): McpServer => {
     'list_comments',
     {
       title: 'List Docmost comments',
-      description: 'Lists the comment threads on a page with their replies, authors, text and the quoted text each one is attached to.',
+      description:
+        'Lists the comment threads on a page with their replies, authors, text and the quoted text each one is attached to.',
       inputSchema: {
         pageId: pageReferenceSchema,
         includeResolved: z.boolean().optional().describe('Include resolved threads too; defaults to false.'),
@@ -523,7 +571,8 @@ const createServer = (): McpServer => {
     'add_comment',
     {
       title: 'Add a Docmost comment',
-      description: 'Posts a comment on a page, attached to a quoted piece of text when quote is given, and notifies the people it mentions.',
+      description:
+        'Posts a comment on a page, attached to a quoted piece of text when quote is given, and notifies the people it mentions.',
       inputSchema: {
         pageId: pageReferenceSchema,
         text: commentTextSchema,
@@ -531,14 +580,21 @@ const createServer = (): McpServer => {
           .string()
           .min(1)
           .optional()
-          .describe('Exact text to attach the comment to, copied from get_page; must appear once inside one paragraph or heading.'),
+          .describe(
+            'Exact text to attach the comment to, copied from get_page; must appear once inside one paragraph or heading.',
+          ),
       },
       annotations: commentWriteAnnotations,
     },
     ({ pageId, text, quote }) =>
       runTool(async (client) => {
         const { comment, ...anchoring } = await client.addComment({ pageId, text, quote });
-        return toJson({ id: comment.id, pageId: comment.pageId, type: comment.type ?? (quote ? 'inline' : 'page'), ...anchoring });
+        return toJson({
+          id: comment.id,
+          pageId: comment.pageId,
+          type: comment.type ?? (quote ? 'inline' : 'page'),
+          ...anchoring,
+        });
       }),
   );
 
@@ -553,7 +609,11 @@ const createServer = (): McpServer => {
     ({ commentId, text }) =>
       runTool(async (client) => {
         const { reply, threadId, postedToThread } = await client.replyToComment(commentId, text);
-        return toJson({ id: reply.id, threadId, ...(postedToThread ? { note: `Posted in thread ${threadId}, since replies are one level deep.` } : {}) });
+        return toJson({
+          id: reply.id,
+          threadId,
+          ...(postedToThread ? { note: `Posted in thread ${threadId}, since replies are one level deep.` } : {}),
+        });
       }),
   );
 
@@ -572,13 +632,16 @@ const createServer = (): McpServer => {
     'delete_comment',
     {
       title: 'Delete a Docmost comment',
-      description: 'Permanently deletes a comment and removes its highlight from the page, deleting a whole thread only when deleteReplies is set.',
+      description:
+        'Permanently deletes a comment and removes its highlight from the page, deleting a whole thread only when deleteReplies is set.',
       inputSchema: {
         commentId: commentIdSchema,
         deleteReplies: z
           .boolean()
           .optional()
-          .describe("Also delete the comment's replies, which Docmost requires for a thread's top comment; defaults to false."),
+          .describe(
+            "Also delete the comment's replies, which Docmost requires for a thread's top comment; defaults to false.",
+          ),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
@@ -590,14 +653,16 @@ const createServer = (): McpServer => {
     'resolve_comment',
     {
       title: 'Resolve a Docmost comment thread',
-      description: "Resolves or reopens a comment thread by its top comment's id, on Docmost instances whose licence includes resolving.",
+      description:
+        "Resolves or reopens a comment thread by its top comment's id, on Docmost instances whose licence includes resolving.",
       inputSchema: {
         commentId: commentIdSchema,
         resolved: z.boolean().optional().describe('false reopens the thread; defaults to true.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    ({ commentId, resolved }) => runTool(async (client) => toJson(await client.resolveComment(commentId, resolved ?? true))),
+    ({ commentId, resolved }) =>
+      runTool(async (client) => toJson(await client.resolveComment(commentId, resolved ?? true))),
   );
 
   server.registerTool(
@@ -608,7 +673,10 @@ const createServer = (): McpServer => {
         'Uploads a local image or file of up to 50 MB to a page and returns its URL and a Markdown image or link to place in the page with edit_page or update_page.',
       inputSchema: {
         pageId: pageReferenceSchema,
-        filePath: z.string().min(1).describe('Path to the file on the machine running this server; ~ means the home directory.'),
+        filePath: z
+          .string()
+          .min(1)
+          .describe('Path to the file on the machine running this server; ~ means the home directory.'),
         altText: z
           .string()
           .min(1)

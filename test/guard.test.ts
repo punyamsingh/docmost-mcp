@@ -30,7 +30,10 @@ test('a replace on a page with a mention and a comment is refused and nothing is
 test('append and title-only updates still go through on that page', async (t) => {
   const { docmost, server } = await startHarness(t, [richPage()]);
 
-  assert.equal((await server.call('update_page', { pageId: 'p1', markdown: 'more', operation: 'append' })).isError, false);
+  assert.equal(
+    (await server.call('update_page', { pageId: 'p1', markdown: 'more', operation: 'append' })).isError,
+    false,
+  );
   assert.equal((await server.call('update_page', { pageId: 'p1', title: 'Renamed' })).isError, false);
   assert.deepEqual(
     docmost.writes().map((write) => write.body.operation ?? 'title only'),
@@ -40,7 +43,12 @@ test('append and title-only updates still go through on that page', async (t) =>
 
 const mergedCellTable: EditorNode = {
   type: 'table',
-  content: [{ type: 'tableRow', content: [{ type: 'tableCell', attrs: { colspan: 2, rowspan: 1 }, content: [paragraph(text('wide'))] }] }],
+  content: [
+    {
+      type: 'tableRow',
+      content: [{ type: 'tableCell', attrs: { colspan: 2, rowspan: 1 }, content: [paragraph(text('wide'))] }],
+    },
+  ],
 };
 
 const lossyCases: [string, EditorNode][] = [
@@ -72,7 +80,15 @@ test('a replace goes through when every block and mark survives Markdown', async
   const safeDoc = doc(
     { type: 'heading', attrs: { level: 2 }, content: [text('Heading')] },
     { type: 'bulletList', content: [{ type: 'listItem', content: [paragraph(text('item', [{ type: 'bold' }]))] }] },
-    { type: 'table', content: [{ type: 'tableRow', content: [{ type: 'tableHeader', attrs: { colspan: 1, rowspan: 1 }, content: [paragraph(text('a'))] }] }] },
+    {
+      type: 'table',
+      content: [
+        {
+          type: 'tableRow',
+          content: [{ type: 'tableHeader', attrs: { colspan: 1, rowspan: 1 }, content: [paragraph(text('a'))] }],
+        },
+      ],
+    },
     { type: 'callout', attrs: { type: 'info' }, content: [paragraph(text('note'))] },
     { type: 'codeBlock', attrs: { language: 'mermaid' }, content: [text('flowchart LR')] },
     { type: 'image', attrs: { src: 'https://example.com/a.png' } },

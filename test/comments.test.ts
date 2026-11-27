@@ -18,7 +18,10 @@ const launchPage = (...content: EditorNode[]) =>
   makePage({
     id: 'p1',
     markdown: 'Intro line.\n\nThe launch is on Monday.',
-    json: content.length > 0 ? doc(...content) : doc(paragraph(text('Intro line.')), paragraph(text('The launch is on Monday.'))),
+    json:
+      content.length > 0
+        ? doc(...content)
+        : doc(paragraph(text('Intro line.')), paragraph(text('The launch is on Monday.'))),
   });
 
 const resultOf = (result: { isError: boolean; text: string }) => {
@@ -34,13 +37,34 @@ const refusal = (result: { isError: boolean; text: string }, pattern: RegExp) =>
 const commentParagraph = (content: unknown): EditorNode[] => {
   const body = typeof content === 'object' && content !== null && 'content' in content ? content.content : undefined;
   const [first] = Array.isArray(body) ? body : [];
-  return typeof first === 'object' && first !== null && 'content' in first && Array.isArray(first.content) ? first.content : [];
+  return typeof first === 'object' && first !== null && 'content' in first && Array.isArray(first.content)
+    ? first.content
+    : [];
 };
 
 const thread = () => [
-  makeComment({ id: 'c1', pageId: 'p1', type: 'inline', selection: 'on Monday', createdAt: '2026-11-25T10:00:01.000Z' }),
-  makeComment({ id: 'r1', pageId: 'p1', parentCommentId: 'c1', creatorId: PRIYA.id, content: commentBody('Yes.'), createdAt: '2026-11-25T10:00:02.000Z' }),
-  makeComment({ id: 'r2', pageId: 'p1', parentCommentId: 'c1', content: commentBody('Thanks.'), createdAt: '2026-11-25T10:00:03.000Z' }),
+  makeComment({
+    id: 'c1',
+    pageId: 'p1',
+    type: 'inline',
+    selection: 'on Monday',
+    createdAt: '2026-11-25T10:00:01.000Z',
+  }),
+  makeComment({
+    id: 'r1',
+    pageId: 'p1',
+    parentCommentId: 'c1',
+    creatorId: PRIYA.id,
+    content: commentBody('Yes.'),
+    createdAt: '2026-11-25T10:00:02.000Z',
+  }),
+  makeComment({
+    id: 'r2',
+    pageId: 'p1',
+    parentCommentId: 'c1',
+    content: commentBody('Thanks.'),
+    createdAt: '2026-11-25T10:00:03.000Z',
+  }),
 ];
 
 test('list_comments shows open threads with their replies, leaving resolved ones out', async (t) => {
@@ -98,19 +122,27 @@ test('add_comment with a quote anchors the comment to exactly that text', async 
   const { docmost, server } = await startHarness(t, [launchPage()]);
   await openTestEditor(t, docmost, 'p1');
 
-  const result = resultOf(await server.call('add_comment', { pageId: 'p1', text: 'Is this still right?', quote: 'on Monday' }));
+  const result = resultOf(
+    await server.call('add_comment', { pageId: 'p1', text: 'Is this still right?', quote: 'on Monday' }),
+  );
   assert.equal(result.anchored, true);
   assert.equal(docmost.comments()[0]?.selection, 'on Monday');
   assert.deepEqual(
     docmost.liveJson('p1'),
-    doc(paragraph(text('Intro line.')), paragraph(text('The launch is '), text('on Monday', [commentMark(result.id)]), text('.'))),
+    doc(
+      paragraph(text('Intro line.')),
+      paragraph(text('The launch is '), text('on Monday', [commentMark(result.id)]), text('.')),
+    ),
   );
 });
 
 test('add_comment refuses a quote that is not on the page', async (t) => {
   const { docmost, server } = await startHarness(t, [launchPage()]);
 
-  refusal(await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'on Friday' }), /Refused: the quote was not found/);
+  refusal(
+    await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'on Friday' }),
+    /Refused: the quote was not found/,
+  );
   assert.deepEqual(docmost.commentWrites(), []);
 });
 
@@ -118,7 +150,10 @@ test('add_comment refuses a quote that appears twice', async (t) => {
   const page = launchPage(paragraph(text('Monday first.')), paragraph(text('Then Monday again.')));
   const { docmost, server } = await startHarness(t, [page]);
 
-  refusal(await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'Monday' }), /appears 2 times; include more surrounding text/);
+  refusal(
+    await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'Monday' }),
+    /appears 2 times; include more surrounding text/,
+  );
   assert.deepEqual(docmost.commentWrites(), []);
 });
 
@@ -131,16 +166,24 @@ test('add_comment counts overlapping occurrences when checking that a quote is u
 
 test('add_comment refuses a quote crossing a mention, spanning lines, or inside a code block', async (t) => {
   const mention = { type: 'mention', attrs: { id: 'm1', label: 'Priya', entityType: 'user', entityId: PRIYA.id } };
-  const page = launchPage(
-    paragraph(text('Intro line.')),
-    paragraph(text('Ask '), mention, text(' today.')),
-    { type: 'codeBlock', content: [text('const launch = 1;')] },
-  );
+  const page = launchPage(paragraph(text('Intro line.')), paragraph(text('Ask '), mention, text(' today.')), {
+    type: 'codeBlock',
+    content: [text('const launch = 1;')],
+  });
   const { docmost, server } = await startHarness(t, [page]);
 
-  refusal(await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'Ask @Priya today' }), /crosses a mention/);
-  refusal(await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'Intro line.\nAsk' }), /spans more than one line/);
-  refusal(await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'const launch = 1;' }), /inside a code block/);
+  refusal(
+    await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'Ask @Priya today' }),
+    /crosses a mention/,
+  );
+  refusal(
+    await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'Intro line.\nAsk' }),
+    /spans more than one line/,
+  );
+  refusal(
+    await server.call('add_comment', { pageId: 'p1', text: 'Note', quote: 'const launch = 1;' }),
+    /inside a code block/,
+  );
   assert.deepEqual(docmost.commentWrites(), []);
 });
 
@@ -198,16 +241,26 @@ test('@[Full Name] mentions the one member with that name, and list_comments sho
 
 test('a mention with no member, or several, of that name is refused', async (t) => {
   const twin = { id: 'user-3', name: 'Priya Sharma' };
-  const { docmost, server } = await startHarness(t, [launchPage()], { members: [PRIYA, twin, { id: 'user-4', name: 'Nobody Else' }] });
+  const { docmost, server } = await startHarness(t, [launchPage()], {
+    members: [PRIYA, twin, { id: 'user-4', name: 'Nobody Else' }],
+  });
 
-  refusal(await server.call('add_comment', { pageId: 'p1', text: '@[Nobody] hi' }), /no member is named "Nobody"; closest: Nobody Else/);
-  refusal(await server.call('add_comment', { pageId: 'p1', text: '@[Priya Sharma] hi' }), /2 members are named "Priya Sharma"/);
+  refusal(
+    await server.call('add_comment', { pageId: 'p1', text: '@[Nobody] hi' }),
+    /no member is named "Nobody"; closest: Nobody Else/,
+  );
+  refusal(
+    await server.call('add_comment', { pageId: 'p1', text: '@[Priya Sharma] hi' }),
+    /2 members are named "Priya Sharma"/,
+  );
   assert.deepEqual(docmost.commentWrites(), []);
 });
 
 test('a mention is refused when the people search is full, since uniqueness cannot be confirmed', async (t) => {
   const others = Array.from({ length: 99 }, (_, index) => ({ id: `user-sam-${index}`, name: `Sam ${index}` }));
-  const { docmost, server } = await startHarness(t, [launchPage()], { members: [{ id: 'user-sam', name: 'Sam' }, ...others] });
+  const { docmost, server } = await startHarness(t, [launchPage()], {
+    members: [{ id: 'user-sam', name: 'Sam' }, ...others],
+  });
 
   refusal(await server.call('add_comment', { pageId: 'p1', text: '@[Sam] hi' }), /at least 100 members match "Sam"/);
   assert.deepEqual(docmost.commentWrites(), []);
@@ -222,7 +275,9 @@ test('a bare @ or an email address stays plain text', async (t) => {
 });
 
 test('reply_to_comment replies under a top-level comment', async (t) => {
-  const { docmost, server } = await startHarness(t, [launchPage()], { comments: [makeComment({ id: 'c1', pageId: 'p1' })] });
+  const { docmost, server } = await startHarness(t, [launchPage()], {
+    comments: [makeComment({ id: 'c1', pageId: 'p1' })],
+  });
 
   const result = resultOf(await server.call('reply_to_comment', { commentId: 'c1', text: 'Agreed.' }));
   assert.equal(result.threadId, 'c1');
@@ -250,7 +305,10 @@ test('resolve_comment resolves and reopens a thread, and its highlight follows',
     highlightUpdated: true,
   });
   assert.notEqual(docmost.comments().find((comment) => comment.id === 'c1')?.resolvedAt, null);
-  assert.deepEqual(docmost.liveJson('p1'), doc(paragraph(text('The launch is '), text('on Monday', [commentMark('c1', true)]), text('.'))));
+  assert.deepEqual(
+    docmost.liveJson('p1'),
+    doc(paragraph(text('The launch is '), text('on Monday', [commentMark('c1', true)]), text('.'))),
+  );
 
   assert.deepEqual(resultOf(await server.call('resolve_comment', { commentId: 'c1', resolved: false })), {
     id: 'c1',
@@ -268,9 +326,15 @@ test("resolve_comment sets the highlight's resolved flag itself when Docmost lea
   await openTestEditor(t, docmost, 'p1');
 
   assert.equal(resultOf(await server.call('resolve_comment', { commentId: 'c1' })).highlightUpdated, true);
-  assert.deepEqual(docmost.liveJson('p1'), doc(paragraph(text('The launch is '), text('on Monday', [commentMark('c1', true)]), text('.'))));
+  assert.deepEqual(
+    docmost.liveJson('p1'),
+    doc(paragraph(text('The launch is '), text('on Monday', [commentMark('c1', true)]), text('.'))),
+  );
 
-  assert.equal(resultOf(await server.call('resolve_comment', { commentId: 'c1', resolved: false })).highlightUpdated, true);
+  assert.equal(
+    resultOf(await server.call('resolve_comment', { commentId: 'c1', resolved: false })).highlightUpdated,
+    true,
+  );
   assert.deepEqual(docmost.liveJson('p1'), page.json);
 });
 
@@ -290,7 +354,10 @@ test('resolve_comment on an instance without the licence is refused plainly', as
   const { docmost, server } = await startHarness(t, [launchPage()], { comments: thread() });
   docmost.setResolveMode('unlicensed');
 
-  refusal(await server.call('resolve_comment', { commentId: 'c1' }), /needs a Docmost Enterprise licence on this instance, so the thread stays open\. Nothing changed\./);
+  refusal(
+    await server.call('resolve_comment', { commentId: 'c1' }),
+    /needs a Docmost Enterprise licence on this instance, so the thread stays open\. Nothing changed\./,
+  );
   assert.equal(docmost.comments().find((comment) => comment.id === 'c1')?.resolvedAt, null);
 });
 
@@ -302,7 +369,7 @@ test('resolve_comment on a reply is refused and names the thread', async (t) => 
 });
 
 test("edit_comment replaces the account's own comment text, with a mention", async (t) => {
-  const { docmost, server } = await startHarness(t, [launchPage()], { comments: thread(), members: [PRIYA] });
+  const { server } = await startHarness(t, [launchPage()], { comments: thread(), members: [PRIYA] });
 
   assert.deepEqual(resultOf(await server.call('edit_comment', { commentId: 'r2', text: 'Thanks @[Priya Sharma].' })), {
     id: 'r2',
@@ -361,16 +428,23 @@ test('delete_comment with deleteReplies deletes the whole thread', async (t) => 
 
 test("delete_comment removes an inline comment's highlight from the live document", async (t) => {
   const page = launchPage(paragraph(text('The launch is '), text('on Monday', [commentMark('c1')]), text('.')));
-  const { docmost, server } = await startHarness(t, [page], { comments: [makeComment({ id: 'c1', pageId: 'p1', type: 'inline' })] });
+  const { docmost, server } = await startHarness(t, [page], {
+    comments: [makeComment({ id: 'c1', pageId: 'p1', type: 'inline' })],
+  });
   await openTestEditor(t, docmost, 'p1');
 
-  assert.deepEqual(resultOf(await server.call('delete_comment', { commentId: 'c1' })), { deleted: ['c1'], highlightRemoved: true });
+  assert.deepEqual(resultOf(await server.call('delete_comment', { commentId: 'c1' })), {
+    deleted: ['c1'],
+    highlightRemoved: true,
+  });
   assert.deepEqual(docmost.liveJson('p1'), doc(paragraph(text('The launch is on Monday.'))));
 });
 
 test('delete_comment still deletes when the highlight cannot be removed, and says so', async (t) => {
   const page = launchPage(paragraph(text('The launch is '), text('on Monday', [commentMark('c1')]), text('.')));
-  const { docmost, server } = await startHarness(t, [page], { comments: [makeComment({ id: 'c1', pageId: 'p1', type: 'inline' })] });
+  const { docmost, server } = await startHarness(t, [page], {
+    comments: [makeComment({ id: 'c1', pageId: 'p1', type: 'inline' })],
+  });
   docmost.setCollabMode('readOnly');
   await openTestEditor(t, docmost, 'p1');
 

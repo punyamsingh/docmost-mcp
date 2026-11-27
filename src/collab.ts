@@ -54,7 +54,13 @@ const toEditorNode = (element: Y.XmlElement, blocks: Map<EditorNode, Y.XmlElemen
   const attrs = element.getAttributes();
   const content = element
     .toArray()
-    .flatMap((child) => (child instanceof Y.XmlText ? textNodes(child) : child instanceof Y.XmlElement ? [toEditorNode(child, blocks)] : []));
+    .flatMap((child) =>
+      child instanceof Y.XmlText
+        ? textNodes(child)
+        : child instanceof Y.XmlElement
+          ? [toEditorNode(child, blocks)]
+          : [],
+    );
   const node: EditorNode = {
     type: element.nodeName,
     ...(Object.keys(attrs).length > 0 ? { attrs } : {}),
@@ -205,7 +211,11 @@ const createLiveDocument = (
       }
       const timer = setTimeout(() => {
         provider.off('unsyncedChanges', onChange);
-        reject(new LiveUnconfirmedError(`The edit was sent but Docmost did not confirm it within ${timeoutMs / 1000} s; re-read the page before trying again.`));
+        reject(
+          new LiveUnconfirmedError(
+            `The edit was sent but Docmost did not confirm it within ${timeoutMs / 1000} s; re-read the page before trying again.`,
+          ),
+        );
       }, timeoutMs);
       const onChange = () => {
         if (provider.unsyncedChanges === 0) {
@@ -251,7 +261,8 @@ export const openLiveDocument = (options: {
       reject(error);
     };
     const timer = setTimeout(
-      () => fail(new LiveUnavailableError(`the live-editing connection did not sync within ${options.timeoutMs / 1000} s`)),
+      () =>
+        fail(new LiveUnavailableError(`the live-editing connection did not sync within ${options.timeoutMs / 1000} s`)),
       options.timeoutMs,
     );
     const socket = new HocuspocusProviderWebsocket({
@@ -270,7 +281,8 @@ export const openLiveDocument = (options: {
       document: ydoc,
       token: options.token,
       awareness: null,
-      onAuthenticationFailed: ({ reason }) => fail(new LiveRefusedError(`Docmost refused the live-editing connection: ${reason}`)),
+      onAuthenticationFailed: ({ reason }) =>
+        fail(new LiveRefusedError(`Docmost refused the live-editing connection: ${reason}`)),
       onAuthenticated: ({ scope }) => {
         canEdit = scope !== 'readonly';
         if (!canEdit && !options.readOnly) {

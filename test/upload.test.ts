@@ -53,12 +53,16 @@ test('other files come back as a Markdown link with the given text', async (t) =
   const otherPath = await writeTempFile('notes.xyz', 'data');
 
   const pdf = uploadResultSchema.parse(
-    JSON.parse((await server.call('upload_attachment', { pageId: 'p1', filePath: pdfPath, altText: 'Q3 [final]' })).text),
+    JSON.parse(
+      (await server.call('upload_attachment', { pageId: 'p1', filePath: pdfPath, altText: 'Q3 [final]' })).text,
+    ),
   );
   assert.equal(pdf.mimeType, 'application/pdf');
   assert.equal(pdf.markdown, '[Q3 \\[final\\]](/api/files/attachment-1/report.pdf)');
 
-  const other = uploadResultSchema.parse(JSON.parse((await server.call('upload_attachment', { pageId: 'p1', filePath: otherPath })).text));
+  const other = uploadResultSchema.parse(
+    JSON.parse((await server.call('upload_attachment', { pageId: 'p1', filePath: otherPath })).text),
+  );
   assert.equal(other.markdown, '[notes.xyz](/api/files/attachment-2/notes.xyz)');
   assert.equal(docmost.uploads()[1]?.type, 'application/octet-stream');
 });

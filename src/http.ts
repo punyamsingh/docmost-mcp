@@ -12,6 +12,7 @@ const isAuthorized = (request: IncomingMessage, token: string | undefined) =>
 export const startHttpServer = async (createServer: () => McpServer, config: HttpConfig) => {
   let allowedHosts: string[] = [];
 
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises -- every await is inside try/catch
   const httpServer = createHttpServer(async (request, response) => {
     if (new URL(request.url ?? '/', 'http://localhost').pathname !== '/mcp') {
       response.writeHead(404).end();
