@@ -977,7 +977,7 @@ const createServer = (): McpServer => {
     {
       title: 'Resolve a Docmost comment thread',
       description:
-        "Resolves or reopens a comment thread by its top comment's id, on Docmost instances whose licence includes resolving.",
+        "Resolves or reopens a comment thread by its top comment's id, which Docmost before 0.98 allows only with an Enterprise licence.",
       inputSchema: {
         commentId: commentIdSchema,
         resolved: z.boolean().optional().describe('false reopens the thread; defaults to true.'),

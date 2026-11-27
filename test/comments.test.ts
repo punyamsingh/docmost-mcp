@@ -356,7 +356,7 @@ test('resolve_comment on an instance without the licence is refused plainly', as
 
   refusal(
     await server.call('resolve_comment', { commentId: 'c1' }),
-    /needs a Docmost Enterprise licence on this instance, so the thread stays open\. Nothing changed\./,
+    /only resolves comment threads with an Enterprise licence \(Docmost 0\.98 and newer don.t need one\), so the thread stays open\. Nothing changed\./,
   );
   assert.equal(docmost.comments().find((comment) => comment.id === 'c1')?.resolvedAt, null);
 });
