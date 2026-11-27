@@ -60,3 +60,93 @@ test('accepts a page id, a slug id or a copied page URL', async (t) => {
     assert.equal(window.body, 'hello');
   }
 });
+
+const guide = [
+  'Intro text.',
+  '',
+  '## Setup',
+  'Install it.',
+  '',
+  '```bash',
+  '# not a heading',
+  'npm install',
+  '```',
+  '',
+  '### From a clone',
+  'Clone it.',
+  '',
+  '## Usage',
+  'Use it.',
+].join('\n');
+
+test('outline lists headings with levels and line numbers, skipping lines inside code blocks', async (t) => {
+  const { docmost, server } = await startHarness(t, [makePage({ id: 'p1', markdown: guide })]);
+
+  const result = await server.call('get_page', { pageId: 'p1', outline: true });
+  assert.equal(result.isError, false, result.text);
+  const parsed = JSON.parse(result.text);
+  assert.equal(parsed.url, `${docmost.url}/p/Sp1`);
+  assert.equal(parsed.totalLines, 15);
+  assert.deepEqual(parsed.outline, [
+    { line: 3, level: 2, heading: 'Setup' },
+    { line: 11, level: 3, heading: 'From a clone' },
+    { line: 14, level: 2, heading: 'Usage' },
+  ]);
+});
+
+test('section returns a heading down to the next heading at its level, with whole-page line numbers', async (t) => {
+  const { server } = await startHarness(t, [makePage({ id: 'p1', markdown: guide })]);
+
+  const { text } = await server.call('get_page', { pageId: 'p1', section: '## setup' });
+  const window = readPageResult(text);
+  assert.equal(window.header.totalLines, 15);
+  assert.equal(window.header.nextOffset, null);
+  assert.deepEqual(JSON.parse(text.slice(0, text.indexOf('\n\n---\n\n'))).section, {
+    heading: 'Setup',
+    firstLine: 3,
+    lastLine: 13,
+  });
+  assert.equal(window.body, guide.split('\n').slice(2, 13).join('\n'));
+
+  const last = readPageResult((await server.call('get_page', { pageId: 'p1', section: 'Usage' })).text);
+  assert.equal(last.body, '## Usage\nUse it.');
+});
+
+test('a long section pages within itself and says how to continue', async (t) => {
+  const { server } = await startHarness(t, [makePage({ id: 'p1', markdown: guide })]);
+
+  const first = readPageResult((await server.call('get_page', { pageId: 'p1', section: 'Setup', limit: 4 })).text);
+  assert.equal(first.header.nextOffset, 7);
+  assert.match(first.body, /\[lines 3–6 of 15; call get_page with the same section and offset 7 for more\]$/);
+
+  const rest = readPageResult((await server.call('get_page', { pageId: 'p1', section: 'Setup', offset: 11 })).text);
+  assert.equal(rest.body, '### From a clone\nClone it.\n');
+  assert.equal(rest.header.nextOffset, null);
+});
+
+test('a section that matches no heading, or two, is refused with the line numbers', async (t) => {
+  const { server } = await startHarness(t, [makePage({ id: 'p1', markdown: `${guide}\n\n## Setup\nAgain.` })]);
+
+  const missing = await server.call('get_page', { pageId: 'p1', section: 'Deploy' });
+  assert.equal(missing.isError, true);
+  assert.match(
+    missing.text,
+    /No heading matches "Deploy"\. Headings by line: 3 Setup; 11 From a clone; 14 Usage; 17 Setup\./,
+  );
+
+  const twice = await server.call('get_page', { pageId: 'p1', section: 'setup' });
+  assert.equal(twice.isError, true);
+  assert.match(twice.text, /"setup" matches 2 headings, at lines 3, 17; read the one you want with offset and limit\./);
+});
+
+test('section refuses an offset outside it, and outline with section is refused', async (t) => {
+  const { server } = await startHarness(t, [makePage({ id: 'p1', markdown: guide })]);
+
+  const outside = await server.call('get_page', { pageId: 'p1', section: 'Usage', offset: 2 });
+  assert.equal(outside.isError, true);
+  assert.match(outside.text, /offset 2 is outside the section "Usage", lines 14–15\./);
+
+  const both = await server.call('get_page', { pageId: 'p1', section: 'Usage', outline: true });
+  assert.equal(both.isError, true);
+  assert.match(both.text, /Pass outline or section, not both\./);
+});

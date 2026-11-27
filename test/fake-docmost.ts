@@ -296,7 +296,8 @@ export const startFakeDocmost = async (
       slugId: `S${newIds.get(page.id) ?? page.id}`,
       title: sameSpace && page === root ? `Copy of ${page.title}` : page.title,
       spaceId: targetSpaceId,
-      parentPageId: page === root ? (sameSpace ? root.parentPageId : null) : (newIds.get(page.parentPageId ?? '') ?? null),
+      parentPageId:
+        page === root ? (sameSpace ? root.parentPageId : null) : (newIds.get(page.parentPageId ?? '') ?? null),
       json: page.json === null ? null : withoutCommentMarks(page.json),
       history: [],
     }));
@@ -802,7 +803,9 @@ export const startFakeDocmost = async (
         return;
       }
       const { content: _content, ...copyInfo } = pageInfo(copy, undefined);
-      send(response, 200, { data: { ...copyInfo, hasChildren: subpages.length > 0, childPageIds: subpages.map((subpage) => subpage.id) } });
+      send(response, 200, {
+        data: { ...copyInfo, hasChildren: subpages.length > 0, childPageIds: subpages.map((subpage) => subpage.id) },
+      });
       return;
     }
     if (endpoint === '/pages/move-to-space') {

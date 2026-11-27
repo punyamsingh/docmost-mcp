@@ -32,7 +32,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `list_spaces` | Lists the spaces the account can see, with their ids |
 | `list_pages` | Lists the root pages of a space, or the children of a page, with each page's `updatedAt` on Docmost 0.97 and newer |
 | `search_pages` | Full-text search, optionally within one space, with each result's `spaceId` and `updatedAt`; `offset` pages through more results |
-| `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
+| `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt`; or one heading's `section`; or, with `outline`, only its headings and their line numbers |
 | `list_page_history` | Lists a page's saved revisions, newest first, with author, contributors and time |
 | `get_page_revision` | Returns one saved revision as Markdown, 500 lines at a time by default |
 | `restore_page_revision` | Puts a saved revision back as the page's body and title, diagrams, mentions and formatting included |

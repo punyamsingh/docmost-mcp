@@ -43,11 +43,14 @@ const summarizePage = (client: DocmostClient, page: DocmostPage) => ({
 const DEFAULT_LINE_LIMIT = 500;
 const MAX_WINDOW_CHARACTERS = 100_000;
 
-const sliceLines = (markdown: string, offset: number, limit: number) => {
-  const lines = markdown === '' ? [] : markdown.split('\n');
+const splitLines = (markdown: string) => (markdown === '' ? [] : markdown.split('\n'));
+
+const sliceLines = (markdown: string, offset: number, limit: number, endLine?: number) => {
+  const lines = splitLines(markdown);
+  const lastAllowedLine = endLine ?? lines.length;
   const windowLines: string[] = [];
   let characterCount = 0;
-  for (const line of lines.slice(offset - 1, offset - 1 + limit)) {
+  for (const line of lines.slice(offset - 1, Math.min(offset - 1 + limit, lastAllowedLine))) {
     if (characterCount + line.length > MAX_WINDOW_CHARACTERS) {
       if (windowLines.length === 0) {
         windowLines.push(line.slice(0, MAX_WINDOW_CHARACTERS));
@@ -63,8 +66,61 @@ const sliceLines = (markdown: string, offset: number, limit: number) => {
     firstLine: offset,
     lastLine,
     totalLines: lines.length,
-    nextOffset: lastLine < lines.length ? lastLine + 1 : null,
+    nextOffset: lastLine < lastAllowedLine ? lastLine + 1 : null,
   };
+};
+
+type Heading = { line: number; level: number; heading: string };
+
+const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+const HEADING_PATTERN = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
+
+const outlineOf = (markdown: string): Heading[] => {
+  const headings: Heading[] = [];
+  let openFence: string | undefined;
+  splitLines(markdown).forEach((text, index) => {
+    const fence = FENCE_PATTERN.exec(text)?.[1];
+    if (openFence !== undefined) {
+      if (fence !== undefined && fence[0] === openFence[0] && fence.length >= openFence.length) {
+        openFence = undefined;
+      }
+      return;
+    }
+    if (fence !== undefined) {
+      openFence = fence;
+      return;
+    }
+    const match = HEADING_PATTERN.exec(text);
+    if (match?.[1] !== undefined) {
+      headings.push({ line: index + 1, level: match[1].length, heading: (match[2] ?? '').trim() });
+    }
+  });
+  return headings;
+};
+
+const normalizeHeading = (heading: string) =>
+  heading
+    .trim()
+    .replace(/^#+\s*/, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+const findSection = (outline: Heading[], section: string, totalLines: number) => {
+  const matches = outline.filter((heading) => normalizeHeading(heading.heading) === normalizeHeading(section));
+  const [match] = matches;
+  if (match === undefined) {
+    const headings = outline.slice(0, 50).map((heading) => `${heading.line} ${heading.heading}`);
+    throw new Error(
+      `No heading matches "${section}".${headings.length > 0 ? ` Headings by line: ${headings.join('; ')}.` : ' The page has no headings.'}`,
+    );
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `"${section}" matches ${matches.length} headings, at lines ${matches.map((heading) => heading.line).join(', ')}; read the one you want with offset and limit.`,
+    );
+  }
+  const next = outline.find((heading) => heading.line > match.line && heading.level <= match.level);
+  return { ...match, lastLine: next === undefined ? totalLines : next.line - 1 };
 };
 
 const pageReferenceSchema = z
@@ -207,10 +263,16 @@ const createServer = (): McpServer => {
     'get_page',
     {
       title: 'Read a Docmost page',
-      description: 'Returns a window of a page as Markdown along with its id, space, parent, URL and line counts.',
+      description:
+        "Returns a window of a page as Markdown along with its id, space, parent, URL and line counts, or just one heading's section, or only the page's headings with their line numbers.",
       inputSchema: {
         pageId: pageReferenceSchema,
-        offset: z.number().int().min(1).optional().describe('First line to return, starting at 1; defaults to 1.'),
+        offset: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe('First line to return, starting at 1; defaults to 1, or to the section heading.'),
         limit: z
           .number()
           .int()
@@ -218,22 +280,54 @@ const createServer = (): McpServer => {
           .max(2000)
           .optional()
           .describe(`Number of lines to return; defaults to ${DEFAULT_LINE_LIMIT}.`),
+        section: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            'Heading text, ignoring case; returns from that heading to the next heading of the same or a higher level.',
+          ),
+        outline: z
+          .boolean()
+          .optional()
+          .describe('Return only the headings, with their levels and line numbers, instead of the body.'),
       },
       annotations: readOnlyAnnotations,
     },
-    ({ pageId, offset, limit }) =>
+    ({ pageId, offset, limit, section, outline }) =>
       runTool(async (client) => {
+        if (outline && section !== undefined) {
+          throw new Error('Pass outline or section, not both.');
+        }
         const page = await client.getPage(pageId);
-        const window = sliceLines(page.markdown, offset ?? 1, limit ?? DEFAULT_LINE_LIMIT);
+        const totalLines = splitLines(page.markdown).length;
+        if (outline) {
+          return toJson({ ...summarizePage(client, page), totalLines, outline: outlineOf(page.markdown) });
+        }
+        const range = section === undefined ? undefined : findSection(outlineOf(page.markdown), section, totalLines);
+        if (range !== undefined && offset !== undefined && (offset < range.line || offset > range.lastLine)) {
+          throw new Error(
+            `offset ${offset} is outside the section "${range.heading}", lines ${range.line}–${range.lastLine}.`,
+          );
+        }
+        const window = sliceLines(
+          page.markdown,
+          offset ?? range?.line ?? 1,
+          limit ?? DEFAULT_LINE_LIMIT,
+          range?.lastLine,
+        );
         const header = toJson({
           ...summarizePage(client, page),
+          ...(range === undefined
+            ? {}
+            : { section: { heading: range.heading, firstLine: range.line, lastLine: range.lastLine } }),
           totalLines: window.totalLines,
           nextOffset: window.nextOffset,
         });
         const continuation =
           window.nextOffset === null
             ? ''
-            : `\n\n[lines ${window.firstLine}–${window.lastLine} of ${window.totalLines}; call get_page with offset ${window.nextOffset} for more]`;
+            : `\n\n[lines ${window.firstLine}–${window.lastLine} of ${window.totalLines}; call get_page with ${range === undefined ? '' : 'the same section and '}offset ${window.nextOffset} for more]`;
         return `${header}\n\n---\n\n${window.body}${continuation}`;
       }),
   );
@@ -590,11 +684,15 @@ const createServer = (): McpServer => {
         'Copies a page and its subpages, without their comments, next to the original as "Copy of" its title, or into another space or under a chosen page.',
       inputSchema: {
         pageId: pageReferenceSchema,
-        parentPageId: pageReferenceSchema.optional().describe('Put the copy under this page, in whichever space it is.'),
+        parentPageId: pageReferenceSchema
+          .optional()
+          .describe('Put the copy under this page, in whichever space it is.'),
         spaceId: z
           .string()
           .optional()
-          .describe('Space id from list_spaces; without parentPageId, puts the copy at the end of this space\'s root pages.'),
+          .describe(
+            "Space id from list_spaces; without parentPageId, puts the copy at the end of this space's root pages.",
+          ),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
