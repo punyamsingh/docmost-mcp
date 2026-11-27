@@ -1701,7 +1701,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const page = await getPage(input.pageId);
     const parentPage = input.parentPageId === undefined ? undefined : await getPage(input.parentPageId);
     if (parentPage && input.spaceId && input.spaceId !== parentPage.spaceId) {
-      throw new DocmostError(`Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`);
+      throw new DocmostError(
+        `Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`,
+      );
     }
     const spaceId = parentPage?.spaceId ?? input.spaceId ?? page.spaceId;
     const copy = await post(
@@ -1717,7 +1719,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
       return { page: await movePage({ pageId: copy.id, parentPageId: parentPage.id }), subpagesCopied };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { page: toPage(copy), subpagesCopied, moveFailed: `The copy was made but not moved under ${parentPage.title ?? parentPage.id}: ${reason}` };
+      return {
+        page: toPage(copy),
+        subpagesCopied,
+        moveFailed: `The copy was made but not moved under ${parentPage.title ?? parentPage.id}: ${reason}`,
+      };
     }
   };
 
