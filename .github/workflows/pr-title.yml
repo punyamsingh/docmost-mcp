@@ -11,7 +11,7 @@ jobs:
     name: PR title
     runs-on: ubuntu-latest
     steps:
-      - name: Check the title is "type: description"
+      - name: Check the title is type, colon, description
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
