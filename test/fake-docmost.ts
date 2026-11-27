@@ -25,11 +25,13 @@ export type FakePage = {
   position?: string;
   deletedAt?: string | null;
   history?: FakeRevision[];
+  labels?: string[];
+  links?: string[];
 };
 
 export type FakeRevision = { id: string; title: string; content: EditorNode; createdAt: string; authorId: string };
 
-export type FakeMember = { id: string; name: string };
+export type FakeMember = { id: string; name: string; email?: string; role?: string };
 
 export type FakeSpace = { id: string; name: string; slug: string };
 
@@ -57,6 +59,7 @@ export const PASSWORD = 'correct-password';
 export const SPACE_ID = 'space-1';
 export const START_TIME = '2026-11-25T10:00:00.000Z';
 export const ACCOUNT: FakeMember = { id: 'user-1', name: 'Test Account' };
+export const WORKSPACE = { id: 'workspace-1', name: 'Test Workspace' };
 
 const paragraphsFrom = (markdown: string): EditorNode[] =>
   markdown
@@ -241,7 +244,8 @@ export const startFakeDocmost = async (
   const pages = initialPages.map((page) => structuredClone(page));
   const spaces = options.spaces ?? [{ id: SPACE_ID, name: 'General', slug: 'general' }];
   const comments = (options.comments ?? []).map((comment) => structuredClone(comment));
-  const members = [ACCOUNT, ...(options.members ?? [])];
+  const members = [{ ...ACCOUNT, email: EMAIL, role: 'owner' }, ...(options.members ?? [])];
+  const missingEndpoints = new Set<string>();
   let commentMarks: 'apply' | 'drop' = 'apply';
   let spaceAdmin = false;
   let spaceViewer = false;
@@ -264,7 +268,7 @@ export const startFakeDocmost = async (
   const findPage = (reference: unknown) => pages.find((page) => page.id === reference || page.slugId === reference);
 
   const pageInfo = (
-    { markdown, json, textPieces: _pieces, history: _history, ...fields }: FakePage,
+    { markdown, json, textPieces: _pieces, history: _history, labels: _labels, links: _links, ...fields }: FakePage,
     format: unknown,
   ) => ({
     ...fields,
@@ -327,6 +331,36 @@ export const startFakeDocmost = async (
   });
 
   const memberView = (id: string) => members.find((member) => member.id === id) ?? null;
+
+  const workspaceMemberView = (member: FakeMember) => ({
+    id: member.id,
+    name: member.name,
+    email: member.email ?? `${member.id}@example.test`,
+    avatarUrl: null,
+    role: member.role ?? 'member',
+    workspaceId: WORKSPACE.id,
+  });
+
+  const normalizeLabel = (name: string) => name.trim().replace(/\s+/g, '-').toLowerCase();
+
+  const labelView = (name: string) => ({
+    id: `label-${name}`,
+    name,
+    type: 'page',
+    createdAt: START_TIME,
+    updatedAt: START_TIME,
+    workspaceId: WORKSPACE.id,
+  });
+
+  const linkedPageView = (page: FakePage) => ({
+    id: page.id,
+    slugId: page.slugId,
+    title: page.title,
+    icon: null,
+    spaceId: page.spaceId,
+    updatedAt: page.updatedAt,
+    space: spaces.find((space) => space.id === page.spaceId) ?? null,
+  });
 
   const revisionView = (page: FakePage, { content, authorId, ...revision }: FakeRevision) => ({
     ...revision,
@@ -700,12 +734,54 @@ export const startFakeDocmost = async (
       const recent = pages
         .filter((page) => !page.deletedAt && (body.spaceId === undefined || page.spaceId === body.spaceId))
         .sort((first, second) => byNewest(first.updatedAt, second.updatedAt))
-        .map(({ markdown: _markdown, json: _json, textPieces: _pieces, history: _history, ...fields }) => ({
-          ...fields,
-          space: spaces.find((space) => space.id === fields.spaceId) ?? null,
-          lastUpdatedBy: ACCOUNT,
-        }));
+        .map(
+          ({
+            markdown: _markdown,
+            json: _json,
+            textPieces: _pieces,
+            history: _history,
+            labels: _labels,
+            links: _links,
+            ...fields
+          }) => ({
+            ...fields,
+            space: spaces.find((space) => space.id === fields.spaceId) ?? null,
+            lastUpdatedBy: ACCOUNT,
+          }),
+        );
       send(response, 200, { data: cursorPage(recent, body) });
+      return;
+    }
+    if (endpoint === '/users/me') {
+      send(response, 200, {
+        data: {
+          user: { ...workspaceMemberView(members[0] ?? ACCOUNT), locale: 'en-US', settings: null },
+          workspace: { ...WORKSPACE, hostname: null, memberCount: members.length },
+        },
+      });
+      return;
+    }
+    if (endpoint === '/workspace/members') {
+      const query = typeof body.query === 'string' ? body.query.toLowerCase() : '';
+      const matches = members
+        .map(workspaceMemberView)
+        .filter((member) => `${member.name}\n${member.email}`.toLowerCase().includes(query))
+        .sort((first, second) => first.name.localeCompare(second.name));
+      send(response, 200, { data: cursorPage(matches, body) });
+      return;
+    }
+    if (endpoint === '/labels/pages') {
+      const name = typeof body.name === 'string' ? normalizeLabel(body.name) : '';
+      const labelled = pages
+        .filter(
+          (page) =>
+            !page.deletedAt &&
+            (page.labels ?? []).includes(name) &&
+            (body.spaceId === undefined || page.spaceId === body.spaceId),
+        )
+        .sort((first, second) => byNewest(first.updatedAt, second.updatedAt))
+        .map((page) => ({ ...linkedPageView(page), labels: (page.labels ?? []).map(labelView) }));
+      send(response, 200, { data: cursorPage(labelled, body) });
       return;
     }
     if (endpoint.startsWith('/comments/') && endpoint !== '/comments/create') {
@@ -770,6 +846,55 @@ export const startFakeDocmost = async (
     }
     if (endpoint === '/pages/info') {
       send(response, 200, { data: pageInfo(page, body.format) });
+      return;
+    }
+    if (endpoint === '/pages/backlinks') {
+      const related = pages.filter((candidate) =>
+        body.direction === 'incoming'
+          ? (candidate.links ?? []).includes(page.id)
+          : (page.links ?? []).includes(candidate.id),
+      );
+      send(response, 200, {
+        data: cursorPage(
+          related
+            .filter((candidate) => !candidate.deletedAt)
+            .sort((first, second) => byNewest(first.updatedAt, second.updatedAt))
+            .map(linkedPageView),
+          body,
+        ),
+      });
+      return;
+    }
+    if (endpoint === '/pages/labels') {
+      send(response, 200, { data: cursorPage((page.labels ?? []).map(labelView), body) });
+      return;
+    }
+    if ((endpoint === '/pages/labels/add' || endpoint === '/pages/labels/remove') && page.deletedAt) {
+      send(response, 404, { message: 'Page not found' });
+      return;
+    }
+    if (endpoint === '/pages/labels/add') {
+      const names = Array.isArray(body.names) ? body.names.map((name) => normalizeLabel(String(name))) : [];
+      if (names.length === 0 || names.length > 25 || names.some((name) => !/^[a-z0-9_-][a-z0-9_~-]*$/.test(name))) {
+        send(response, 400, {
+          message: ['Label names can only contain letters, numbers, hyphens, underscores, and tildes'],
+        });
+        return;
+      }
+      page.labels = [...new Set([...(page.labels ?? []), ...names])];
+      send(response, 200, { data: names.map(labelView) });
+      return;
+    }
+    if (endpoint === '/pages/labels/remove') {
+      const exists = pages.some((candidate) =>
+        (candidate.labels ?? []).some((name) => `label-${name}` === body.labelId),
+      );
+      if (!exists) {
+        send(response, 404, { message: 'Label not found' });
+        return;
+      }
+      page.labels = (page.labels ?? []).filter((name) => `label-${name}` !== body.labelId);
+      send(response, 200, {});
       return;
     }
     if (endpoint === '/pages/move') {
@@ -907,6 +1032,10 @@ export const startFakeDocmost = async (
     const body = await readBody(request);
     requests.push({ endpoint, body });
     requestHooks.forEach((hook) => hook({ endpoint, body }));
+    if (missingEndpoints.has(endpoint)) {
+      send(response, 404, { message: `Cannot POST /api${endpoint}`, error: 'Not Found', statusCode: 404 });
+      return;
+    }
     handle(endpoint, body, token, response);
   };
 
@@ -961,6 +1090,9 @@ export const startFakeDocmost = async (
     },
     makeSpaceViewer: () => {
       spaceViewer = true;
+    },
+    removeEndpoints: (...endpoints: string[]) => {
+      endpoints.forEach((endpoint) => missingEndpoints.add(endpoint));
     },
     setResolveMode: (mode: 'updatesHighlight' | 'leavesHighlight' | 'unlicensed') => {
       resolveMode = mode;
