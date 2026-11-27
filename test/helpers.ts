@@ -19,7 +19,7 @@ const SERVER_ENTRY = fileURLToPath(new URL('../build/index.js', import.meta.url)
 
 export const startServer = async (
   docmostUrl: string,
-  options: { password?: string; cacheHome?: string; collabUrl?: string } = {},
+  options: { password?: string; cacheHome?: string; collabUrl?: string; env?: Record<string, string> } = {},
 ) => {
   const cacheHome = options.cacheHome ?? (await mkdtemp(join(tmpdir(), 'docmost-mcp-test-')));
   const client = new Client({ name: 'docmost-mcp-tests', version: '0.0.0' });
@@ -33,6 +33,7 @@ export const startServer = async (
         DOCMOST_PASSWORD: options.password ?? PASSWORD,
         XDG_CACHE_HOME: cacheHome,
         ...(options.collabUrl ? { DOCMOST_COLLAB_URL: options.collabUrl } : {}),
+        ...options.env,
       },
     }),
   );
@@ -90,11 +91,11 @@ export const connectHttpClient = async (t: TestContext, url: string, token: stri
 export const startHarness = async (
   t: TestContext,
   pages: FakePage[],
-  options: { collabUrl?: string } & Parameters<typeof startFakeDocmost>[1] = {},
+  options: { collabUrl?: string; env?: Record<string, string> } & Parameters<typeof startFakeDocmost>[1] = {},
 ) => {
-  const { collabUrl, ...fakeOptions } = options;
+  const { collabUrl, env, ...fakeOptions } = options;
   const docmost = await startFakeDocmost(pages, fakeOptions);
-  const server = await startServer(docmost.url, { collabUrl: collabUrl?.replace('{docmost}', docmost.url) });
+  const server = await startServer(docmost.url, { collabUrl: collabUrl?.replace('{docmost}', docmost.url), env });
   t.after(async () => {
     await server.close();
     await docmost.close();

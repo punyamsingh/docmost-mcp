@@ -13,6 +13,7 @@ export type DocmostConfig = {
   password: string;
   sessionFile: string;
   collabUrl: string;
+  importWaitMs: number;
 };
 
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -48,6 +49,12 @@ export const loadConfig = (): DocmostConfig => {
   const accountKey = createHash('sha256').update(`${baseUrl}\n${email}`).digest('hex').slice(0, 16);
   const collabUrl = new URL(process.env.DOCMOST_COLLAB_URL || `${baseUrl}/collab`);
   collabUrl.protocol = collabUrl.protocol.replace(/^http/, 'ws');
+  const importWaitSeconds = Number(process.env.DOCMOST_IMPORT_WAIT_SECONDS || '120');
+  if (!Number.isFinite(importWaitSeconds) || importWaitSeconds < 0) {
+    throw new Error(
+      `Invalid DOCMOST_IMPORT_WAIT_SECONDS ${process.env.DOCMOST_IMPORT_WAIT_SECONDS}; pass a number of seconds.`,
+    );
+  }
 
   return {
     baseUrl,
@@ -55,6 +62,7 @@ export const loadConfig = (): DocmostConfig => {
     password: process.env.DOCMOST_PASSWORD ?? '',
     sessionFile: join(cacheDirectory, `session-${accountKey}.json`),
     collabUrl: collabUrl.toString(),
+    importWaitMs: importWaitSeconds * 1000,
   };
 };
 
