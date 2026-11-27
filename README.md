@@ -38,6 +38,12 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `restore_page_revision` | Puts a saved revision back as the page's body and title, diagrams, mentions and formatting included |
 | `list_recent_pages` | Lists recently updated pages across the account's spaces, or within one space |
 | `get_page_breadcrumbs` | Returns the path from the space root down to a page |
+| `get_current_user` | Returns the account the server is logged in as, with its email, role, workspace and the workspace's member count |
+| `list_workspace_members` | Lists the workspace's members with names, emails and roles, optionally filtered by name or email |
+| `get_backlinks` | Lists the pages linking to a page, or the pages it links to, on Docmost 0.90 and newer |
+| `list_page_labels` | Lists a page's labels, on Docmost 0.90 and newer |
+| `update_page_labels` | Adds and removes a page's labels by name and returns the labels afterwards; removing a label the page doesn't have is refused |
+| `find_pages_by_label` | Lists the pages carrying a label, optionally within one space, on Docmost 0.90 and newer |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
 | `update_page` | Replaces, appends to or prepends to a page body; can rename it or change its icon |
 | `edit_page` | Replaces an exact piece of text in a page, in place when it is plain text, leaving the rest of the page as it is |

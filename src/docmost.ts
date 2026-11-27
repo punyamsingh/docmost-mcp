@@ -181,6 +181,24 @@ const commentSchema = z.object({
 
 type DocmostComment = z.infer<typeof commentSchema>;
 
+const workspaceMemberSchema = memberSchema.extend({ email: z.string().nullish(), role: z.string().nullish() });
+
+const currentUserSchema = z.object({
+  user: workspaceMemberSchema,
+  workspace: z.object({ id: z.string(), name: z.string().nullish(), memberCount: z.number().nullish() }),
+});
+
+const linkedPageSchema = z.object({
+  id: z.string(),
+  slugId: z.string(),
+  title: z.string().nullish(),
+  spaceId: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+  space: z.object({ name: z.string().nullish() }).nullish(),
+});
+
+const labelSchema = z.object({ id: z.string(), name: z.string() });
+
 const suggestSchema = z.looseObject({ users: z.array(memberSchema).optional() });
 
 const attachmentSchema = z.object({ id: z.string(), fileName: z.string(), mimeType: z.string().nullish() });
@@ -807,6 +825,7 @@ export type DocmostTreePage = z.infer<typeof treePageSchema>;
 export type DocmostSearchResult = z.infer<typeof searchResultSchema>;
 export type DocmostRevision = z.infer<typeof revisionSchema>;
 export type DocmostRecentPage = z.infer<typeof recentPageSchema>;
+export type DocmostLinkedPage = z.infer<typeof linkedPageSchema>;
 export type DocmostPage = Omit<z.infer<typeof pageSchema>, 'content'> & { markdown: string };
 
 export type ContentOperation = 'replace' | 'append' | 'prepend';
@@ -872,6 +891,12 @@ export type AddCommentResult = {
   anchorMissing?: string;
 };
 
+export type UpdatePageLabelsInput = {
+  pageId: string;
+  add?: string[];
+  remove?: string[];
+};
+
 export type UploadAttachmentInput = {
   pageId: string;
   filePath: string;
@@ -886,6 +911,13 @@ export class DocmostError extends Error {
     this.status = status;
   }
 }
+
+class MissingEndpointError extends DocmostError {}
+
+const normalizeLabelName = (name: string): string => name.trim().replace(/\s+/g, '-').toLowerCase();
+
+const LABEL_NAME_PATTERN = /^[a-z0-9_-][a-z0-9_~-]*$/;
+const MAX_LABEL_NAME_LENGTH = 100;
 
 const readErrorMessage = async (response: Response): Promise<string> => {
   const rawBody = await response.text();
@@ -1078,10 +1110,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
       response = await send(await freshToken);
     }
     if (!response.ok) {
-      throw new DocmostError(
-        `Docmost ${endpoint} failed (${response.status}): ${await readErrorMessage(response)}`,
-        response.status,
-      );
+      const message = await readErrorMessage(response);
+      const failure = `Docmost ${endpoint} failed (${response.status}): ${message}`;
+      throw response.status === 404 && message.startsWith('Cannot POST ')
+        ? new MissingEndpointError(failure, response.status)
+        : new DocmostError(failure, response.status);
     }
     return response;
   };
@@ -1135,6 +1168,17 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return { items: result.items, nextCursor: result.meta.hasNextPage ? (result.meta.nextCursor ?? null) : null };
   };
 
+  const requireVersion = async <Result>(version: string, call: Promise<Result>): Promise<Result> => {
+    try {
+      return await call;
+    } catch (error) {
+      if (error instanceof MissingEndpointError) {
+        throw new DocmostError(`This needs Docmost ${version} or newer (${error.message}).`, error.status);
+      }
+      throw error;
+    }
+  };
+
   const pageUrl = (slugId: string): string => `${config.baseUrl}/p/${slugId}`;
 
   const listSpaces = (): Promise<{ items: DocmostSpace[]; complete: boolean }> =>
@@ -1174,6 +1218,63 @@ export const createDocmostClient = (config: DocmostConfig) => {
 
   const getBreadcrumbs = (pageReference: string): Promise<DocmostTreePage[]> =>
     post('/pages/breadcrumbs', { pageId: normalizePageReference(pageReference) }, z.array(treePageSchema));
+
+  const getCurrentUser = () => post('/users/me', {}, currentUserSchema);
+
+  const listWorkspaceMembers = (query: string | undefined, limit: number, cursor?: string) =>
+    fetchCursorPage('/workspace/members', { query }, workspaceMemberSchema, limit, cursor);
+
+  const getBacklinks = (pageReference: string, direction: 'incoming' | 'outgoing', limit: number, cursor?: string) =>
+    requireVersion(
+      '0.90',
+      fetchCursorPage(
+        '/pages/backlinks',
+        { pageId: normalizePageReference(pageReference), direction },
+        linkedPageSchema,
+        limit,
+        cursor,
+      ),
+    );
+
+  const pageLabels = (pageId: string) =>
+    requireVersion('0.90', collectAllPages('/pages/labels', { pageId }, labelSchema));
+
+  const listPageLabels = async (pageReference: string): Promise<string[]> =>
+    (await pageLabels(normalizePageReference(pageReference))).map((label) => label.name);
+
+  const updatePageLabels = async (input: UpdatePageLabelsInput): Promise<string[]> => {
+    const pageId = normalizePageReference(input.pageId);
+    const add = [...new Set((input.add ?? []).map(normalizeLabelName))];
+    const remove = [...new Set((input.remove ?? []).map(normalizeLabelName))];
+    const invalid = add.filter((name) => name.length > MAX_LABEL_NAME_LENGTH || !LABEL_NAME_PATTERN.test(name));
+    if (invalid.length > 0) {
+      throw new DocmostError(
+        `Refused: invalid label name ${invalid.map((name) => `"${name}"`).join(', ')}; labels hold up to ${MAX_LABEL_NAME_LENGTH} letters, numbers, hyphens, underscores and tildes, and cannot start with a tilde. Nothing changed.`,
+      );
+    }
+    const addedAndRemoved = add.filter((name) => remove.includes(name));
+    if (addedAndRemoved.length > 0) {
+      throw new DocmostError(`Refused: ${addedAndRemoved.join(', ')} is in both add and remove. Nothing changed.`);
+    }
+    const current = await pageLabels(pageId);
+    const missing = remove.filter((name) => !current.some((label) => label.name === name));
+    if (missing.length > 0) {
+      const names = current.map((label) => label.name);
+      throw new DocmostError(
+        `Refused: the page has no ${missing.join(', ')} label; its labels are ${names.length > 0 ? names.join(', ') : 'none'}. Nothing changed.`,
+      );
+    }
+    if (add.length > 0) {
+      await post('/pages/labels/add', { pageId, names: add }, z.unknown());
+    }
+    for (const label of current.filter((candidate) => remove.includes(candidate.name))) {
+      await post('/pages/labels/remove', { pageId, labelId: label.id }, z.unknown());
+    }
+    return (await pageLabels(pageId)).map((label) => label.name);
+  };
+
+  const findPagesByLabel = (label: string, spaceId: string | undefined, limit: number, cursor?: string) =>
+    requireVersion('0.90', fetchCursorPage('/labels/pages', { name: label, spaceId }, linkedPageSchema, limit, cursor));
 
   const resolvePageId = async (pageReference: string): Promise<string> => {
     const normalizedReference = normalizePageReference(pageReference);
@@ -1701,7 +1802,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const page = await getPage(input.pageId);
     const parentPage = input.parentPageId === undefined ? undefined : await getPage(input.parentPageId);
     if (parentPage && input.spaceId && input.spaceId !== parentPage.spaceId) {
-      throw new DocmostError(`Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`);
+      throw new DocmostError(
+        `Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`,
+      );
     }
     const spaceId = parentPage?.spaceId ?? input.spaceId ?? page.spaceId;
     const copy = await post(
@@ -1717,7 +1820,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
       return { page: await movePage({ pageId: copy.id, parentPageId: parentPage.id }), subpagesCopied };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return { page: toPage(copy), subpagesCopied, moveFailed: `The copy was made but not moved under ${parentPage.title ?? parentPage.id}: ${reason}` };
+      return {
+        page: toPage(copy),
+        subpagesCopied,
+        moveFailed: `The copy was made but not moved under ${parentPage.title ?? parentPage.id}: ${reason}`,
+      };
     }
   };
 
@@ -1823,6 +1930,12 @@ export const createDocmostClient = (config: DocmostConfig) => {
     getPageRevision,
     listRecentPages,
     getBreadcrumbs,
+    getCurrentUser,
+    listWorkspaceMembers,
+    getBacklinks,
+    listPageLabels,
+    updatePageLabels,
+    findPagesByLabel,
     createPage,
     updatePage,
     editPage,

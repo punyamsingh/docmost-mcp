@@ -174,8 +174,24 @@ test('list_trash lists the top deleted page of each deleted subtree, newest firs
   assert.equal(result.isError, false, result.text);
   assert.deepEqual(JSON.parse(result.text), {
     pages: [
-      { id: 'p1', slugId: 'Sp1', title: 'Page p1', parentPageId: null, deletedAt: '2026-11-26T10:00:00.000Z', deletedBy: ACCOUNT.name, url: `${docmost.url}/p/Sp1` },
-      { id: 'old', slugId: 'Sold', title: 'Page old', parentPageId: null, deletedAt: '2026-11-24T10:00:00.000Z', deletedBy: ACCOUNT.name, url: `${docmost.url}/p/Sold` },
+      {
+        id: 'p1',
+        slugId: 'Sp1',
+        title: 'Page p1',
+        parentPageId: null,
+        deletedAt: '2026-11-26T10:00:00.000Z',
+        deletedBy: ACCOUNT.name,
+        url: `${docmost.url}/p/Sp1`,
+      },
+      {
+        id: 'old',
+        slugId: 'Sold',
+        title: 'Page old',
+        parentPageId: null,
+        deletedAt: '2026-11-24T10:00:00.000Z',
+        deletedBy: ACCOUNT.name,
+        url: `${docmost.url}/p/Sold`,
+      },
     ],
     nextCursor: null,
   });
@@ -205,7 +221,10 @@ test('duplicate_page copies a page and its subpages next to the original as "Cop
   assert.equal(copy.parentPageId, null);
   assert.equal(copy.subpagesCopied, 1);
   assert.equal(copy.moveFailed, undefined);
-  assert.deepEqual(docmost.requests.filter((entry) => entry.endpoint === '/pages/duplicate').map((entry) => entry.body), [{ pageId: 'p1' }]);
+  assert.deepEqual(
+    docmost.requests.filter((entry) => entry.endpoint === '/pages/duplicate').map((entry) => entry.body),
+    [{ pageId: 'p1' }],
+  );
   assert.equal(docmost.page('c1')?.parentPageId, 'p1');
   assert.ok(docmost.page('c1-copy4'), 'the subpage is copied once, the trashed one not at all');
   assert.equal(docmost.page('c1-copy4')?.parentPageId, copy.id);
@@ -225,7 +244,9 @@ test('duplicate_page copies into another space and under the given page there', 
   assert.equal(copy.spaceId, OTHER_SPACE_ID);
   assert.equal(copy.parentPageId, 'q1');
   assert.deepEqual(
-    docmost.requests.filter((entry) => /^\/pages\/(duplicate|move)/.test(entry.endpoint)).map((entry) => entry.endpoint),
+    docmost.requests
+      .filter((entry) => /^\/pages\/(duplicate|move)/.test(entry.endpoint))
+      .map((entry) => entry.endpoint),
     ['/pages/duplicate', '/pages/move'],
   );
   assert.equal(docmost.requests.find((entry) => entry.endpoint === '/pages/duplicate')?.body.spaceId, OTHER_SPACE_ID);
@@ -256,10 +277,16 @@ test('duplicate_page reports a copy it made but could not move under the parent'
 });
 
 test('duplicate_page refuses a parent outside the given space before copying', async (t) => {
-  const { docmost, server } = await startHarness(t, [makePage({ id: 'p1' }), makePage({ id: 'q1', spaceId: OTHER_SPACE_ID })]);
+  const { docmost, server } = await startHarness(t, [
+    makePage({ id: 'p1' }),
+    makePage({ id: 'q1', spaceId: OTHER_SPACE_ID }),
+  ]);
 
   const result = await server.call('duplicate_page', { pageId: 'p1', parentPageId: 'q1', spaceId: SPACE_ID });
   assert.equal(result.isError, true);
   assert.match(result.text, /Parent page q1 is in space space-2, not space-1/);
-  assert.equal(docmost.requests.some((entry) => entry.endpoint === '/pages/duplicate'), false);
+  assert.equal(
+    docmost.requests.some((entry) => entry.endpoint === '/pages/duplicate'),
+    false,
+  );
 });

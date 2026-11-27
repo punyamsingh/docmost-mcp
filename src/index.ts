@@ -4,7 +4,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { loadConfig, loadHttpConfig, packageVersion } from './config.js';
-import { createDocmostClient, MAX_LIST_ITEMS, type DocmostClient, type DocmostPage } from './docmost.js';
+import {
+  createDocmostClient,
+  MAX_LIST_ITEMS,
+  type DocmostClient,
+  type DocmostLinkedPage,
+  type DocmostPage,
+} from './docmost.js';
 import { startHttpServer } from './http.js';
 
 console.log = console.error;
@@ -38,6 +44,16 @@ const summarizePage = (client: DocmostClient, page: DocmostPage) => ({
   parentPageId: page.parentPageId ?? null,
   url: client.pageUrl(page.slugId),
   updatedAt: page.updatedAt ?? null,
+});
+
+const summarizeLinkedPage = (client: DocmostClient, page: DocmostLinkedPage) => ({
+  id: page.id,
+  slugId: page.slugId,
+  title: page.title ?? null,
+  spaceId: page.spaceId ?? null,
+  space: page.space?.name ?? null,
+  updatedAt: page.updatedAt ?? null,
+  url: client.pageUrl(page.slugId),
 });
 
 const DEFAULT_LINE_LIMIT = 500;
@@ -394,6 +410,143 @@ const createServer = (): McpServer => {
   );
 
   server.registerTool(
+    'get_current_user',
+    {
+      title: 'Get the current Docmost user',
+      description:
+        "Returns the Docmost account this server is logged in as, with its email, role, workspace and the workspace's member count.",
+      inputSchema: {},
+      annotations: readOnlyAnnotations,
+    },
+    () =>
+      runTool(async (client) => {
+        const { user, workspace } = await client.getCurrentUser();
+        return toJson({
+          id: user.id,
+          name: user.name ?? null,
+          email: user.email ?? null,
+          role: user.role ?? null,
+          workspaceId: workspace.id,
+          workspace: workspace.name ?? null,
+          memberCount: workspace.memberCount ?? null,
+        });
+      }),
+  );
+
+  server.registerTool(
+    'list_workspace_members',
+    {
+      title: 'List Docmost workspace members',
+      description: 'Lists the active members of the workspace with their names, emails and roles, sorted by name.',
+      inputSchema: {
+        query: z.string().min(1).optional().describe('Only members whose name or email contains this text.'),
+        limit: listLimitSchema,
+        cursor: cursorSchema,
+      },
+      annotations: readOnlyAnnotations,
+    },
+    ({ query, limit, cursor }) =>
+      runTool(async (client) => {
+        const { items, nextCursor } = await client.listWorkspaceMembers(query, limit ?? 20, cursor);
+        return toJson({
+          members: items.map((member) => ({
+            id: member.id,
+            name: member.name ?? null,
+            email: member.email ?? null,
+            role: member.role ?? null,
+          })),
+          nextCursor,
+        });
+      }),
+  );
+
+  server.registerTool(
+    'get_backlinks',
+    {
+      title: 'Get Docmost page backlinks',
+      description: 'Lists the pages that link to a page, or the pages it links to, most recently updated first.',
+      inputSchema: {
+        pageId: pageReferenceSchema,
+        direction: z
+          .enum(['incoming', 'outgoing'])
+          .describe('incoming lists the pages linking to this page; outgoing lists the pages it links to.'),
+        limit: listLimitSchema,
+        cursor: cursorSchema,
+      },
+      annotations: readOnlyAnnotations,
+    },
+    ({ pageId, direction, limit, cursor }) =>
+      runTool(async (client) => {
+        const { items, nextCursor } = await client.getBacklinks(pageId, direction, limit ?? 20, cursor);
+        return toJson({ pages: items.map((page) => summarizeLinkedPage(client, page)), nextCursor });
+      }),
+  );
+
+  server.registerTool(
+    'list_page_labels',
+    {
+      title: 'List Docmost page labels',
+      description: 'Lists the labels on a page.',
+      inputSchema: { pageId: pageReferenceSchema },
+      annotations: readOnlyAnnotations,
+    },
+    ({ pageId }) => runTool(async (client) => toJson({ labels: await client.listPageLabels(pageId) })),
+  );
+
+  server.registerTool(
+    'update_page_labels',
+    {
+      title: 'Update Docmost page labels',
+      description:
+        "Adds labels to a page and removes labels from it by name, refusing to remove a label the page doesn't have, and returns the page's labels afterwards.",
+      inputSchema: {
+        pageId: pageReferenceSchema,
+        add: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(25)
+          .optional()
+          .describe(
+            'Label names to add; Docmost lowercases them, turns spaces into hyphens and allows only letters, numbers, -, _ and ~.',
+          ),
+        remove: z
+          .array(z.string().min(1))
+          .min(1)
+          .optional()
+          .describe('Label names to remove; each must already be on the page.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    ({ pageId, add, remove }) =>
+      runTool(async (client) => {
+        if (add === undefined && remove === undefined) {
+          throw new Error('Provide add or remove.');
+        }
+        return toJson({ labels: await client.updatePageLabels({ pageId, add, remove }) });
+      }),
+  );
+
+  server.registerTool(
+    'find_pages_by_label',
+    {
+      title: 'Find Docmost pages by label',
+      description: 'Lists the pages carrying a label, most recently updated first, optionally within one space.',
+      inputSchema: {
+        label: z.string().min(1).max(100).describe('Label name; case does not matter.'),
+        spaceId: z.string().optional().describe('Restrict the list to this space id.'),
+        limit: listLimitSchema,
+        cursor: cursorSchema,
+      },
+      annotations: readOnlyAnnotations,
+    },
+    ({ label, spaceId, limit, cursor }) =>
+      runTool(async (client) => {
+        const { items, nextCursor } = await client.findPagesByLabel(label, spaceId, limit ?? 20, cursor);
+        return toJson({ pages: items.map((page) => summarizeLinkedPage(client, page)), nextCursor });
+      }),
+  );
+
+  server.registerTool(
     'create_page',
     {
       title: 'Create a Docmost page',
@@ -590,11 +743,15 @@ const createServer = (): McpServer => {
         'Copies a page and its subpages, without their comments, next to the original as "Copy of" its title, or into another space or under a chosen page.',
       inputSchema: {
         pageId: pageReferenceSchema,
-        parentPageId: pageReferenceSchema.optional().describe('Put the copy under this page, in whichever space it is.'),
+        parentPageId: pageReferenceSchema
+          .optional()
+          .describe('Put the copy under this page, in whichever space it is.'),
         spaceId: z
           .string()
           .optional()
-          .describe('Space id from list_spaces; without parentPageId, puts the copy at the end of this space\'s root pages.'),
+          .describe(
+            "Space id from list_spaces; without parentPageId, puts the copy at the end of this space's root pages.",
+          ),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },

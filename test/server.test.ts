@@ -24,7 +24,7 @@ const statusWithHost = (url: string, host: string, token: string) =>
       .end(body);
   });
 
-test('lists the 24 tools with their annotations and sends the instructions', async (t) => {
+test('lists the 30 tools with their annotations and sends the instructions', async (t) => {
   const { docmost, server } = await startHarness(t, []);
   const { tools } = await server.client.listTools();
   const readOnly = { readOnlyHint: true, openWorldHint: true };
@@ -40,6 +40,12 @@ test('lists the 24 tools with their annotations and sends the instructions', asy
     restore_page_revision: { ...write, destructiveHint: true, idempotentHint: true },
     list_recent_pages: readOnly,
     get_page_breadcrumbs: readOnly,
+    get_current_user: readOnly,
+    list_workspace_members: readOnly,
+    get_backlinks: readOnly,
+    list_page_labels: readOnly,
+    update_page_labels: { ...write, destructiveHint: false, idempotentHint: true },
+    find_pages_by_label: readOnly,
     create_page: { ...write, destructiveHint: false },
     update_page: { ...write, destructiveHint: true },
     edit_page: { ...write, destructiveHint: true },
