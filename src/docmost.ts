@@ -145,6 +145,17 @@ const revisionSchema = z.object({
 
 const revisionContentSchema = revisionSchema.extend({ content: editorNodeSchema.nullish() });
 
+const trashPageSchema = z.object({
+  id: z.string(),
+  slugId: z.string(),
+  title: z.string().nullish(),
+  parentPageId: z.string().nullish(),
+  deletedAt: z.string().nullish(),
+  deletedBy: memberSchema.nullish(),
+});
+
+const duplicatedPageSchema = pageSchema.extend({ childPageIds: z.array(z.string()).nullish() });
+
 const recentPageSchema = z.object({
   id: z.string(),
   slugId: z.string(),
@@ -835,6 +846,12 @@ export type EditPageInput = {
 export type RestorePageRevisionInput = {
   historyId: string;
   expectedUpdatedAt?: string;
+};
+
+export type DuplicatePageInput = {
+  pageId: string;
+  parentPageId?: string;
+  spaceId?: string;
 };
 
 export type MovePageInput = {
@@ -1677,6 +1694,33 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return { page, movedToSpaceRoot: Boolean(trashedPage.parentPageId) && !page.parentPageId };
   };
 
+  const listTrash = (spaceId: string, limit: number, cursor?: string) =>
+    fetchCursorPage('/pages/trash', { spaceId }, trashPageSchema, limit, cursor);
+
+  const duplicatePage = async (input: DuplicatePageInput) => {
+    const page = await getPage(input.pageId);
+    const parentPage = input.parentPageId === undefined ? undefined : await getPage(input.parentPageId);
+    if (parentPage && input.spaceId && input.spaceId !== parentPage.spaceId) {
+      throw new DocmostError(`Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`);
+    }
+    const spaceId = parentPage?.spaceId ?? input.spaceId ?? page.spaceId;
+    const copy = await post(
+      '/pages/duplicate',
+      { pageId: page.id, ...(spaceId === page.spaceId ? {} : { spaceId }) },
+      duplicatedPageSchema,
+    );
+    const subpagesCopied = copy.childPageIds?.length ?? 0;
+    if (parentPage === undefined) {
+      return { page: toPage(copy), subpagesCopied };
+    }
+    try {
+      return { page: await movePage({ pageId: copy.id, parentPageId: parentPage.id }), subpagesCopied };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { page: toPage(copy), subpagesCopied, moveFailed: `The copy was made but not moved under ${parentPage.title ?? parentPage.id}: ${reason}` };
+    }
+  };
+
   const restorePageRevision = async (input: RestorePageRevisionInput) => {
     const expectedTime = parseExpectedUpdatedAt(input.expectedUpdatedAt);
     const revision = await post('/pages/history/info', { historyId: input.historyId.trim() }, revisionContentSchema);
@@ -1786,6 +1830,8 @@ export const createDocmostClient = (config: DocmostConfig) => {
     deletePage,
     restorePage,
     restorePageRevision,
+    listTrash,
+    duplicatePage,
     listComments,
     addComment,
     replyToComment,

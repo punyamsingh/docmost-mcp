@@ -44,6 +44,8 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `move_page` | Moves a page and its subpages under another page or to a space root, including into another space |
 | `delete_page` | Moves a page and its subpages to the space's trash; never deletes permanently |
 | `restore_page` | Restores a page and its subpages from the trash |
+| `list_trash` | Lists the pages in a space's trash, newest first, with the ids `restore_page` takes |
+| `duplicate_page` | Copies a page and its subpages, without comments, next to the original, into another space or under a chosen page |
 | `list_comments` | Lists a page's open comment threads with their replies, or every thread with `includeResolved` |
 | `add_comment` | Posts a page comment, or an inline comment attached to a `quote` copied from `get_page` |
 | `reply_to_comment` | Replies in a comment's thread |

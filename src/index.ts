@@ -552,6 +552,60 @@ const createServer = (): McpServer => {
   );
 
   server.registerTool(
+    'list_trash',
+    {
+      title: 'List Docmost trash',
+      description:
+        "Lists the pages in a space's trash, most recently deleted first, with the page ids restore_page takes; deleted subpages come back with their parent and aren't listed separately.",
+      inputSchema: {
+        spaceId: z.string().min(1).describe('Space id from list_spaces.'),
+        limit: listLimitSchema,
+        cursor: cursorSchema,
+      },
+      annotations: readOnlyAnnotations,
+    },
+    ({ spaceId, limit, cursor }) =>
+      runTool(async (client) => {
+        const { items, nextCursor } = await client.listTrash(spaceId, limit ?? 20, cursor);
+        return toJson({
+          pages: items.map((page) => ({
+            id: page.id,
+            slugId: page.slugId,
+            title: page.title ?? null,
+            parentPageId: page.parentPageId ?? null,
+            deletedAt: page.deletedAt ?? null,
+            deletedBy: page.deletedBy?.name ?? null,
+            url: client.pageUrl(page.slugId),
+          })),
+          nextCursor,
+        });
+      }),
+  );
+
+  server.registerTool(
+    'duplicate_page',
+    {
+      title: 'Duplicate a Docmost page',
+      description:
+        'Copies a page and its subpages, without their comments, next to the original as "Copy of" its title, or into another space or under a chosen page.',
+      inputSchema: {
+        pageId: pageReferenceSchema,
+        parentPageId: pageReferenceSchema.optional().describe('Put the copy under this page, in whichever space it is.'),
+        spaceId: z
+          .string()
+          .optional()
+          .describe('Space id from list_spaces; without parentPageId, puts the copy at the end of this space\'s root pages.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    ({ pageId, parentPageId, spaceId }) =>
+      runTool(async (client) => {
+        const { page, ...result } = await client.duplicatePage({ pageId, parentPageId, spaceId });
+        return toJson({ ...summarizePage(client, page), ...result });
+      }),
+  );
+
+  server.registerTool(
     'list_comments',
     {
       title: 'List Docmost comments',
