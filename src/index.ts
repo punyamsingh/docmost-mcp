@@ -92,7 +92,7 @@ const createServer = (): McpServer => {
     { name: 'docmost', version: packageVersion },
     {
       instructions:
-        'Docmost wiki access. Every page argument accepts a page id, slug id or page URL. Read a page with get_page before changing it. For small changes use edit_page with text copied exactly from get_page output. For whole-body rewrites use update_page with operation replace and pass the updatedAt from your read as expectedUpdatedAt. Markdown bodies must not repeat the page title as a leading # heading. To comment on a sentence, pass add_comment a quote copied from get_page.',
+        'Docmost wiki access. Every page argument accepts a page id, slug id or page URL. Read a page with get_page before changing it. For small changes use edit_page with text copied exactly from get_page output. For whole-body rewrites use update_page with operation replace and pass the updatedAt from your read as expectedUpdatedAt. To undo changes, find the revision with list_page_history and restore it with restore_page_revision. Markdown bodies must not repeat the page title as a leading # heading. To comment on a sentence, pass add_comment a quote copied from get_page.',
     },
   );
 
@@ -275,6 +275,32 @@ const createServer = (): McpServer => {
             ? ''
             : `\n\n[lines ${window.firstLine}–${window.lastLine} of ${window.totalLines}; call get_page_revision with offset ${window.nextOffset} for more]`;
         return `${header}\n\n---\n\n${window.body}${continuation}`;
+      }),
+  );
+
+  server.registerTool(
+    'restore_page_revision',
+    {
+      title: 'Restore a Docmost page revision',
+      description:
+        "Puts a saved revision back as a page's body and title, keeping diagrams, mentions and formatting, and is refused while an open editor holds unsaved typing.",
+      inputSchema: {
+        historyId: z.string().min(1).describe('Revision id from list_page_history.'),
+        expectedUpdatedAt: z
+          .string()
+          .optional()
+          .describe('updatedAt from your last get_page; the restore is refused if the page changed since.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    ({ historyId, expectedUpdatedAt }) =>
+      runTool(async (client) => {
+        const { page, revision, ...result } = await client.restorePageRevision({ historyId, expectedUpdatedAt });
+        return toJson({
+          ...summarizePage(client, page),
+          restoredFrom: { historyId: revision.id, createdAt: revision.createdAt, author: revision.lastUpdatedBy?.name ?? null },
+          ...result,
+        });
       }),
   );
 

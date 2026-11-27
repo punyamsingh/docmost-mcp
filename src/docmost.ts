@@ -125,6 +125,7 @@ const editorPageSchema = z.object({
   spaceId: z.string(),
   parentPageId: z.string().nullish(),
   updatedAt: z.string().nullish(),
+  deletedAt: z.string().nullish(),
   content: editorNodeSchema.nullish(),
 });
 
@@ -706,6 +707,14 @@ const hasCommentMark = (node: EditorNode, commentId: string): boolean =>
   (node.marks ?? []).some((mark) => mark.type === 'comment' && commentIdSchema.safeParse(mark.attrs).data?.commentId === commentId) ||
   (node.content ?? []).some((child) => hasCommentMark(child, commentId));
 
+const commentIdsIn = (node: EditorNode): string[] => [
+  ...(node.marks ?? []).flatMap((mark) => {
+    const commentId = mark.type === 'comment' ? commentIdSchema.safeParse(mark.attrs).data?.commentId : undefined;
+    return commentId === undefined ? [] : [commentId];
+  }),
+  ...(node.content ?? []).flatMap(commentIdsIn),
+];
+
 const hasStaleMark = (node: EditorNode, isStale: (attrs: Record<string, unknown>) => boolean): boolean =>
   (node.marks ?? []).some((mark) => mark.type === 'comment' && isStale(z.record(z.string(), z.unknown()).catch({}).parse(mark.attrs))) ||
   (node.content ?? []).some((child) => hasStaleMark(child, isStale));
@@ -789,6 +798,11 @@ export type EditPageInput = {
   oldText: string;
   newText: string;
   replaceAll: boolean;
+};
+
+export type RestorePageRevisionInput = {
+  historyId: string;
+  expectedUpdatedAt?: string;
 };
 
 export type MovePageInput = {
@@ -1178,18 +1192,27 @@ export const createDocmostClient = (config: DocmostConfig) => {
     }
   };
 
+  const parseExpectedUpdatedAt = (expectedUpdatedAt: string | undefined): number | undefined => {
+    const expectedTime = expectedUpdatedAt === undefined ? undefined : Date.parse(expectedUpdatedAt);
+    if (Number.isNaN(expectedTime)) {
+      throw new DocmostError(`expectedUpdatedAt "${expectedUpdatedAt}" is not a timestamp; pass updatedAt from get_page.`);
+    }
+    return expectedTime;
+  };
+
+  const refuseStaleWrite = (page: EditorPage, expectedUpdatedAt: string | undefined, expectedTime: number | undefined) => {
+    if (expectedTime !== undefined && Date.parse(page.updatedAt ?? '') !== expectedTime) {
+      throw new DocmostError(
+        `Page changed at ${page.updatedAt ?? 'an unknown time'} (you read ${expectedUpdatedAt}); re-read it with get_page before replacing.`,
+      );
+    }
+  };
+
   const updatePage = async (input: UpdatePageInput): Promise<DocmostPage> => {
     if (input.markdown !== undefined && input.operation === 'replace') {
-      const expectedTime = input.expectedUpdatedAt === undefined ? undefined : Date.parse(input.expectedUpdatedAt);
-      if (Number.isNaN(expectedTime)) {
-        throw new DocmostError(`expectedUpdatedAt "${input.expectedUpdatedAt}" is not a timestamp; pass updatedAt from get_page.`);
-      }
+      const expectedTime = parseExpectedUpdatedAt(input.expectedUpdatedAt);
       const currentPage = await post('/pages/info', { pageId: normalizePageReference(input.pageId) }, editorPageSchema);
-      if (expectedTime !== undefined && Date.parse(currentPage.updatedAt ?? '') !== expectedTime) {
-        throw new DocmostError(
-          `Page changed at ${currentPage.updatedAt ?? 'an unknown time'} (you read ${input.expectedUpdatedAt}); re-read it with get_page before replacing.`,
-        );
-      }
+      refuseStaleWrite(currentPage, input.expectedUpdatedAt, expectedTime);
       refuseLossyRewrite(currentPage);
       const attempt = await openLive(currentPage.id);
       if ('live' in attempt) {
@@ -1571,6 +1594,45 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return { page, movedToSpaceRoot: Boolean(trashedPage.parentPageId) && !page.parentPageId };
   };
 
+  const restorePageRevision = async (input: RestorePageRevisionInput) => {
+    const expectedTime = parseExpectedUpdatedAt(input.expectedUpdatedAt);
+    const revision = await post('/pages/history/info', { historyId: input.historyId.trim() }, revisionContentSchema);
+    if (!revision.content) {
+      throw new DocmostError(`Revision ${revision.id} has no saved content to restore. Nothing changed.`);
+    }
+    const currentPage = await post('/pages/info', { pageId: revision.pageId }, editorPageSchema);
+    if (currentPage.deletedAt) {
+      throw new DocmostError(
+        `${currentPage.title ?? currentPage.id} is in the trash; bring it back with restore_page first. Nothing changed.`,
+      );
+    }
+    refuseStaleWrite(currentPage, input.expectedUpdatedAt, expectedTime);
+    const attempt = await openLive(currentPage.id);
+    let currentContent = currentPage.content ?? { type: 'doc' };
+    if ('live' in attempt) {
+      try {
+        refuseUnsavedTyping(attempt.live, currentPage);
+        currentContent = attempt.live.document;
+      } finally {
+        attempt.live.close();
+      }
+    }
+    const keptComments = new Set(commentIdsIn(revision.content));
+    const page = toPage(
+      await post(
+        '/pages/update',
+        { pageId: currentPage.id, title: revision.title ?? undefined, content: revision.content, operation: 'replace', format: 'json' },
+        pageSchema,
+      ),
+    );
+    return {
+      page,
+      revision,
+      commentHighlightsRemoved: new Set(commentIdsIn(currentContent).filter((commentId) => !keptComments.has(commentId))).size,
+      ...('skipped' in attempt ? { typingCheckSkipped: attempt.skipped } : {}),
+    };
+  };
+
   const readUploadFile = async (filePath: string) => {
     const fullPath = resolve(filePath.replace(/^~(?=$|\/)/, homedir()));
     const fileStats = await stat(fullPath).catch(() => undefined);
@@ -1630,6 +1692,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
     movePage,
     deletePage,
     restorePage,
+    restorePageRevision,
     listComments,
     addComment,
     replyToComment,

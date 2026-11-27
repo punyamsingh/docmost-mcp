@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ACCOUNT, doc, makePage, paragraph, text, type EditorNode } from './fake-docmost.ts';
-import { startHarness } from './helpers.ts';
+import { ACCOUNT, commentMark, doc, makePage, paragraph, START_TIME, text, type EditorNode, type FakePage } from './fake-docmost.ts';
+import { closedPortUrl, openTestEditor, startHarness } from './helpers.ts';
 
 const resultOf = (result: { isError: boolean; text: string }) => {
   assert.equal(result.isError, false, result.text);
@@ -216,4 +216,73 @@ test('returns the breadcrumb path from the space root down to the page', async (
     { id: 'mid', slugId: 'Smid', title: 'Page mid', hasChildren: true, url: `${docmost.url}/p/Smid` },
     { id: 'leaf', slugId: 'Sleaf', title: 'Page leaf', hasChildren: false, url: `${docmost.url}/p/Sleaf` },
   ]);
+});
+
+const restoreFixture = (fields: Partial<FakePage> = {}) => {
+  const revisionContent = [
+    paragraph(text('Old intro, still with ', [commentMark('kept')]), node('mention', { id: ACCOUNT.id, label: ACCOUNT.name, entityType: 'user' })),
+    node('drawio', { src: '/files/flow.drawio.svg', title: 'flow' }),
+  ];
+  return makePage({
+    id: 'p1',
+    title: 'Current title',
+    json: doc(paragraph(text('New intro', [commentMark('kept')])), paragraph(text('Added later', [commentMark('newer')]))),
+    history: [revision('h1', '2026-11-20T10:00:00.000Z', ...revisionContent)],
+    ...fields,
+  });
+};
+
+test('restores a revision as editor JSON into the open editor, keeping diagrams and mentions, and counts dropped highlights', async (t) => {
+  const { docmost, server } = await startHarness(t, [restoreFixture()]);
+  await openTestEditor(t, docmost, 'p1');
+
+  const result = resultOf(await server.call('restore_page_revision', { historyId: 'h1', expectedUpdatedAt: START_TIME }));
+  assert.deepEqual(result.restoredFrom, { historyId: 'h1', createdAt: '2026-11-20T10:00:00.000Z', author: ACCOUNT.name });
+  assert.equal(result.title, 'Title h1');
+  assert.equal(result.commentHighlightsRemoved, 1);
+  assert.equal(result.typingCheckSkipped, undefined);
+
+  const revisionContent = docmost.page('p1')?.history?.[0]?.content;
+  assert.deepEqual(docmost.writes().map((write) => write.body), [
+    { pageId: 'p1', title: 'Title h1', content: revisionContent, operation: 'replace', format: 'json' },
+  ]);
+  assert.deepEqual(docmost.liveJson('p1'), revisionContent);
+});
+
+test('a restore is refused when the page changed since expectedUpdatedAt', async (t) => {
+  const { docmost, server } = await startHarness(t, [restoreFixture({ updatedAt: '2026-11-26T09:00:00.000Z' })]);
+
+  const result = await server.call('restore_page_revision', { historyId: 'h1', expectedUpdatedAt: START_TIME });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /Page changed at 2026-11-26T09:00:00.000Z/);
+  assert.deepEqual(docmost.writes(), []);
+});
+
+test('a restore is refused while an open editor holds unsaved typing', async (t) => {
+  const { docmost, server } = await startHarness(t, [restoreFixture()]);
+  const editor = await openTestEditor(t, docmost, 'p1');
+  await editor.typeParagraph('Typed but not saved.');
+
+  const result = await server.call('restore_page_revision', { historyId: 'h1' });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /Refused: Current title has unsaved edits from an open editor/);
+  assert.deepEqual(docmost.writes(), []);
+});
+
+test('a restore goes through the saved page when the live document is unreachable, and says why', async (t) => {
+  const { docmost, server } = await startHarness(t, [restoreFixture()], { collabUrl: await closedPortUrl() });
+
+  const result = resultOf(await server.call('restore_page_revision', { historyId: 'h1' }));
+  assert.match(result.typingCheckSkipped, /live-editing connection (closed|could not be opened)/);
+  assert.equal(result.commentHighlightsRemoved, 1);
+  assert.deepEqual(docmost.page('p1')?.json, docmost.page('p1')?.history?.[0]?.content);
+});
+
+test('a restore is refused for a page in the trash', async (t) => {
+  const { docmost, server } = await startHarness(t, [restoreFixture({ deletedAt: '2026-11-26T10:00:00.000Z' })]);
+
+  const result = await server.call('restore_page_revision', { historyId: 'h1' });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /Current title is in the trash; bring it back with restore_page first/);
+  assert.deepEqual(docmost.writes(), []);
 });
