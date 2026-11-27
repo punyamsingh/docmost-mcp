@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ACCOUNT, commentMark, doc, makePage, paragraph, START_TIME, text, type EditorNode, type FakePage } from './fake-docmost.ts';
+import {
+  ACCOUNT,
+  commentMark,
+  doc,
+  makePage,
+  paragraph,
+  START_TIME,
+  text,
+  type EditorNode,
+  type FakePage,
+} from './fake-docmost.ts';
 import { closedPortUrl, openTestEditor, startHarness } from './helpers.ts';
 
 const resultOf = (result: { isError: boolean; text: string }) => {
@@ -12,7 +22,10 @@ const readRevision = (result: { isError: boolean; text: string }) => {
   assert.equal(result.isError, false, result.text);
   const separator = '\n\n---\n\n';
   const separatorIndex = result.text.indexOf(separator);
-  return { header: JSON.parse(result.text.slice(0, separatorIndex)), body: result.text.slice(separatorIndex + separator.length) };
+  return {
+    header: JSON.parse(result.text.slice(0, separatorIndex)),
+    body: result.text.slice(separatorIndex + separator.length),
+  };
 };
 
 const revision = (id: string, createdAt: string, ...content: EditorNode[]) => ({
@@ -32,7 +45,9 @@ const node = (type: string, attrs: Record<string, unknown>, ...content: EditorNo
 const block = (type: string, ...content: EditorNode[]): EditorNode => ({ type, content });
 
 test('lists page history newest first and pages through it with nextCursor', async (t) => {
-  const history = ['h1', 'h2', 'h3'].map((id, index) => revision(id, `2026-11-2${index}T10:00:00.000Z`, paragraph(text(id))));
+  const history = ['h1', 'h2', 'h3'].map((id, index) =>
+    revision(id, `2026-11-2${index}T10:00:00.000Z`, paragraph(text(id))),
+  );
   const { docmost, server } = await startHarness(t, [makePage({ id: 'p1', history })]);
 
   const first = resultOf(await server.call('list_page_history', { pageId: `${docmost.url}/p/page-Sp1`, limit: 2 }));
@@ -83,8 +98,17 @@ test('reads a revision as Markdown converted from its editor JSON', async (t) =>
       block('listItem', paragraph(text('one')), block('bulletList', block('listItem', paragraph(text('nested'))))),
       block('listItem', paragraph(text('two'))),
     ),
-    node('orderedList', { start: 3 }, block('listItem', paragraph(text('third'))), block('listItem', paragraph(text('fourth')))),
-    block('taskList', node('taskItem', { checked: true }, paragraph(text('done'))), node('taskItem', { checked: false }, paragraph(text('todo')))),
+    node(
+      'orderedList',
+      { start: 3 },
+      block('listItem', paragraph(text('third'))),
+      block('listItem', paragraph(text('fourth'))),
+    ),
+    block(
+      'taskList',
+      node('taskItem', { checked: true }, paragraph(text('done'))),
+      node('taskItem', { checked: false }, paragraph(text('todo'))),
+    ),
     block('blockquote', paragraph(text('quoted'))),
     node('codeBlock', { language: 'ts' }, text('const a = 1;\nconst b = 2;')),
     block(
@@ -152,7 +176,9 @@ test('reads a revision as Markdown converted from its editor JSON', async (t) =>
 
 test('windows a long revision like get_page', async (t) => {
   const lines = Array.from({ length: 30 }, (_, index) => paragraph(text(`line ${index + 1}`)));
-  const { server } = await startHarness(t, [makePage({ id: 'p1', history: [revision('h1', '2026-11-20T10:00:00.000Z', ...lines)] })]);
+  const { server } = await startHarness(t, [
+    makePage({ id: 'p1', history: [revision('h1', '2026-11-20T10:00:00.000Z', ...lines)] }),
+  ]);
 
   const window = readRevision(await server.call('get_page_revision', { historyId: 'h1', offset: 5, limit: 1 }));
   assert.equal(window.header.totalLines, 59);
@@ -220,13 +246,19 @@ test('returns the breadcrumb path from the space root down to the page', async (
 
 const restoreFixture = (fields: Partial<FakePage> = {}) => {
   const revisionContent = [
-    paragraph(text('Old intro, still with ', [commentMark('kept')]), node('mention', { id: ACCOUNT.id, label: ACCOUNT.name, entityType: 'user' })),
+    paragraph(
+      text('Old intro, still with ', [commentMark('kept')]),
+      node('mention', { id: ACCOUNT.id, label: ACCOUNT.name, entityType: 'user' }),
+    ),
     node('drawio', { src: '/files/flow.drawio.svg', title: 'flow' }),
   ];
   return makePage({
     id: 'p1',
     title: 'Current title',
-    json: doc(paragraph(text('New intro', [commentMark('kept')])), paragraph(text('Added later', [commentMark('newer')]))),
+    json: doc(
+      paragraph(text('New intro', [commentMark('kept')])),
+      paragraph(text('Added later', [commentMark('newer')])),
+    ),
     history: [revision('h1', '2026-11-20T10:00:00.000Z', ...revisionContent)],
     ...fields,
   });
@@ -236,16 +268,23 @@ test('restores a revision as editor JSON into the open editor, keeping diagrams 
   const { docmost, server } = await startHarness(t, [restoreFixture()]);
   await openTestEditor(t, docmost, 'p1');
 
-  const result = resultOf(await server.call('restore_page_revision', { historyId: 'h1', expectedUpdatedAt: START_TIME }));
-  assert.deepEqual(result.restoredFrom, { historyId: 'h1', createdAt: '2026-11-20T10:00:00.000Z', author: ACCOUNT.name });
+  const result = resultOf(
+    await server.call('restore_page_revision', { historyId: 'h1', expectedUpdatedAt: START_TIME }),
+  );
+  assert.deepEqual(result.restoredFrom, {
+    historyId: 'h1',
+    createdAt: '2026-11-20T10:00:00.000Z',
+    author: ACCOUNT.name,
+  });
   assert.equal(result.title, 'Title h1');
   assert.equal(result.commentHighlightsRemoved, 1);
   assert.equal(result.typingCheckSkipped, undefined);
 
   const revisionContent = docmost.page('p1')?.history?.[0]?.content;
-  assert.deepEqual(docmost.writes().map((write) => write.body), [
-    { pageId: 'p1', title: 'Title h1', content: revisionContent, operation: 'replace', format: 'json' },
-  ]);
+  assert.deepEqual(
+    docmost.writes().map((write) => write.body),
+    [{ pageId: 'p1', title: 'Title h1', content: revisionContent, operation: 'replace', format: 'json' }],
+  );
   assert.deepEqual(docmost.liveJson('p1'), revisionContent);
 });
 

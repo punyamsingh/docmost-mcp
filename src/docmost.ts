@@ -419,7 +419,10 @@ export const planInPlaceEdit = (
     if (starts.length < allStarts.length) {
       crossesInlineNode = true;
     }
-    if (!isCode && findAll(children.map((child) => inlineText(child, true)).join(''), searchText).length > starts.length) {
+    if (
+      !isCode &&
+      findAll(children.map((child) => inlineText(child, true)).join(''), searchText).length > starts.length
+    ) {
       crossesMention = true;
     }
     if (starts.length > 0) {
@@ -458,7 +461,12 @@ export const planInPlaceEdit = (
   return { matches: plannedMatches, replacements };
 };
 
-export const editInPlace = (document: EditorNode, oldText: string, newText: string, replaceAll: boolean): InPlaceEdit => {
+export const editInPlace = (
+  document: EditorNode,
+  oldText: string,
+  newText: string,
+  replaceAll: boolean,
+): InPlaceEdit => {
   const editedDocument = structuredClone(document);
   const plan = planInPlaceEdit(editedDocument, oldText, newText, replaceAll);
   if (!('matches' in plan)) {
@@ -556,7 +564,10 @@ const inlineMarkdown = (nodes: EditorNode[]): string =>
       const isCode = node.marks?.some((mark) => mark.type === 'code') ?? false;
       let value = isCode
         ? (node.text ?? '')
-        : MARKDOWN_ESCAPES.reduce((escaped, [pattern, replacement]) => escaped.replace(pattern, replacement), node.text ?? '');
+        : MARKDOWN_ESCAPES.reduce(
+            (escaped, [pattern, replacement]) => escaped.replace(pattern, replacement),
+            node.text ?? '',
+          );
       for (const mark of node.marks ?? []) {
         const delimiter = MARK_DELIMITERS.get(mark.type);
         const href = mark.type === 'link' ? linkMarkSchema.safeParse(mark.attrs).data?.href : undefined;
@@ -582,7 +593,10 @@ const listMarkdown = (list: EditorNode): string => {
     .map((item, index) => {
       const checkbox = item.type === 'taskItem' ? (item.attrs?.checked === true ? '[x] ' : '[ ] ') : '';
       const marker = list.type === 'orderedList' ? `${start + index}. ` : `- ${checkbox}`;
-      const body = (item.content ?? []).map(blockMarkdown).filter((block) => block !== '').join('\n');
+      const body = (item.content ?? [])
+        .map(blockMarkdown)
+        .filter((block) => block !== '')
+        .join('\n');
       return indentLines(body, '  ', marker);
     })
     .join('\n');
@@ -592,11 +606,18 @@ const tableMarkdown = (table: EditorNode): string => {
   const rows = (table.content ?? []).map(
     (row) =>
       `| ${(row.content ?? [])
-        .map((cell) => (cell.content ?? []).map((block) => inlineMarkdown(block.content ?? [])).join(' ').replaceAll('|', '\\|'))
+        .map((cell) =>
+          (cell.content ?? [])
+            .map((block) => inlineMarkdown(block.content ?? []))
+            .join(' ')
+            .replaceAll('|', '\\|'),
+        )
         .join(' | ')} |`,
   );
   const columns = table.content?.[0]?.content?.length ?? 0;
-  return [rows[0] ?? '', `| ${Array.from({ length: columns }, () => '---').join(' | ')} |`, ...rows.slice(1)].join('\n');
+  return [rows[0] ?? '', `| ${Array.from({ length: columns }, () => '---').join(' | ')} |`, ...rows.slice(1)].join(
+    '\n',
+  );
 };
 
 const blockMarkdown = (node: EditorNode): string => {
@@ -669,7 +690,10 @@ const commentLine = (line: string, members: Map<string, Member>): EditorNode[] =
     if (match.index > consumed) {
       nodes.push({ type: 'text', text: line.slice(consumed, match.index) });
     }
-    nodes.push({ type: 'mention', attrs: { id: randomUUID(), label: member.name, entityType: 'user', entityId: member.id } });
+    nodes.push({
+      type: 'mention',
+      attrs: { id: randomUUID(), label: member.name, entityType: 'user', entityId: member.id },
+    });
     consumed = match.index + match[0].length;
   }
   if (consumed < line.length) {
@@ -704,8 +728,9 @@ const hasMarkInRange = (block: EditorNode, start: number, end: number, markType:
 const commentIdSchema = z.looseObject({ commentId: z.string() });
 
 const hasCommentMark = (node: EditorNode, commentId: string): boolean =>
-  (node.marks ?? []).some((mark) => mark.type === 'comment' && commentIdSchema.safeParse(mark.attrs).data?.commentId === commentId) ||
-  (node.content ?? []).some((child) => hasCommentMark(child, commentId));
+  (node.marks ?? []).some(
+    (mark) => mark.type === 'comment' && commentIdSchema.safeParse(mark.attrs).data?.commentId === commentId,
+  ) || (node.content ?? []).some((child) => hasCommentMark(child, commentId));
 
 const commentIdsIn = (node: EditorNode): string[] => [
   ...(node.marks ?? []).flatMap((mark) => {
@@ -716,8 +741,9 @@ const commentIdsIn = (node: EditorNode): string[] => [
 ];
 
 const hasStaleMark = (node: EditorNode, isStale: (attrs: Record<string, unknown>) => boolean): boolean =>
-  (node.marks ?? []).some((mark) => mark.type === 'comment' && isStale(z.record(z.string(), z.unknown()).catch({}).parse(mark.attrs))) ||
-  (node.content ?? []).some((child) => hasStaleMark(child, isStale));
+  (node.marks ?? []).some(
+    (mark) => mark.type === 'comment' && isStale(z.record(z.string(), z.unknown()).catch({}).parse(mark.attrs)),
+  ) || (node.content ?? []).some((child) => hasStaleMark(child, isStale));
 
 const countOverlapping = (text: string, searchText: string): number => {
   let count = 0;
@@ -732,7 +758,9 @@ export type QuoteMatch = { block: EditorNode; start: number; end: number; text: 
 export const findQuote = (document: EditorNode, quote: string): QuoteMatch => {
   const plan = planInPlaceEdit(document, quote.replaceAll('\r\n', '\n'), '', false);
   if ('ambiguousMatches' in plan) {
-    throw new DocmostError(`Refused: the quote appears ${plan.ambiguousMatches} times; include more surrounding text. Nothing was posted.`);
+    throw new DocmostError(
+      `Refused: the quote appears ${plan.ambiguousMatches} times; include more surrounding text. Nothing was posted.`,
+    );
   }
   if ('reason' in plan) {
     throw new DocmostError(`Refused: ${plan.reason.replace('oldText', 'the quote')}. Nothing was posted.`);
@@ -743,13 +771,17 @@ export const findQuote = (document: EditorNode, quote: string): QuoteMatch => {
     throw new DocmostError('Refused: the quote was not found. Nothing was posted.');
   }
   if (match.block.type === 'codeBlock') {
-    throw new DocmostError('Refused: the quote is inside a code block, which cannot hold comments. Nothing was posted.');
+    throw new DocmostError(
+      'Refused: the quote is inside a code block, which cannot hold comments. Nothing was posted.',
+    );
   }
   const end = start + match.length;
   const blockText = (match.block.content ?? []).map((child) => inlineText(child, false)).join('');
   const occurrences = countOverlapping(blockText, blockText.slice(start, end));
   if (occurrences > 1) {
-    throw new DocmostError(`Refused: the quote appears ${occurrences} times; include more surrounding text. Nothing was posted.`);
+    throw new DocmostError(
+      `Refused: the quote appears ${occurrences} times; include more surrounding text. Nothing was posted.`,
+    );
   }
   if (hasMarkInRange(match.block, start, end, 'comment')) {
     throw new DocmostError(
@@ -951,9 +983,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
 
   const readCachedToken = async (): Promise<string | undefined> => {
     try {
-      const cachedSession = sessionFileSchema.safeParse(
-        JSON.parse(await readFile(config.sessionFile, 'utf8')),
-      );
+      const cachedSession = sessionFileSchema.safeParse(JSON.parse(await readFile(config.sessionFile, 'utf8')));
       if (
         cachedSession.success &&
         cachedSession.data.baseUrl === config.baseUrl &&
@@ -977,14 +1007,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
       throw new DocmostError(`Docmost login failed (${response.status}): ${await readErrorMessage(response)}`);
     }
 
-    const tokenCookie = response.headers
-      .getSetCookie()
-      .find((cookie) => cookie.startsWith('authToken='));
+    const tokenCookie = response.headers.getSetCookie().find((cookie) => cookie.startsWith('authToken='));
     const token = tokenCookie?.slice('authToken='.length).split(';')[0];
     if (!token) {
       const loginBody = loginBodySchema.safeParse(await response.json().catch(() => undefined));
-      const needsMfa =
-        loginBody.success && (loginBody.data.data?.userHasMfa || loginBody.data.data?.requiresMfaSetup);
+      const needsMfa = loginBody.success && (loginBody.data.data?.userHasMfa || loginBody.data.data?.requiresMfaSetup);
       throw new DocmostError(
         needsMfa
           ? 'Docmost login needs MFA for this account, which this server cannot complete; use an account without MFA.'
@@ -1034,7 +1061,10 @@ export const createDocmostClient = (config: DocmostConfig) => {
       response = await send(await freshToken);
     }
     if (!response.ok) {
-      throw new DocmostError(`Docmost ${endpoint} failed (${response.status}): ${await readErrorMessage(response)}`, response.status);
+      throw new DocmostError(
+        `Docmost ${endpoint} failed (${response.status}): ${await readErrorMessage(response)}`,
+        response.status,
+      );
     }
     return response;
   };
@@ -1093,8 +1123,17 @@ export const createDocmostClient = (config: DocmostConfig) => {
   const listSpaces = (): Promise<{ items: DocmostSpace[]; complete: boolean }> =>
     collectPages('/spaces', {}, spaceSchema);
 
-  const searchPages = async (query: string, spaceId?: string, limit = 20, offset = 0): Promise<DocmostSearchResult[]> => {
-    const result = await post('/search', { query, spaceId, limit, offset }, z.object({ items: z.array(searchResultSchema) }));
+  const searchPages = async (
+    query: string,
+    spaceId?: string,
+    limit = 20,
+    offset = 0,
+  ): Promise<DocmostSearchResult[]> => {
+    const result = await post(
+      '/search',
+      { query, spaceId, limit, offset },
+      z.object({ items: z.array(searchResultSchema) }),
+    );
     return result.items;
   };
 
@@ -1105,7 +1144,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
     fetchCursorPage('/pages/history', { pageId: normalizePageReference(pageReference) }, revisionSchema, limit, cursor);
 
   const getPageRevision = async (historyId: string) => {
-    const { content, ...revision } = await post('/pages/history/info', { historyId: historyId.trim() }, revisionContentSchema);
+    const { content, ...revision } = await post(
+      '/pages/history/info',
+      { historyId: historyId.trim() },
+      revisionContentSchema,
+    );
     return { ...revision, markdown: content ? editorToMarkdown(content) : '' };
   };
 
@@ -1161,7 +1204,13 @@ export const createDocmostClient = (config: DocmostConfig) => {
     }
     try {
       return {
-        live: await openLiveDocument({ url: config.collabUrl, pageId, token, timeoutMs: LIVE_SYNC_TIMEOUT_MS, readOnly }),
+        live: await openLiveDocument({
+          url: config.collabUrl,
+          pageId,
+          token,
+          timeoutMs: LIVE_SYNC_TIMEOUT_MS,
+          readOnly,
+        }),
       };
     } catch (error) {
       if (error instanceof LiveUnavailableError) {
@@ -1185,7 +1234,8 @@ export const createDocmostClient = (config: DocmostConfig) => {
   const refuseLossyRewrite = (page: z.infer<typeof editorPageSchema>, inPlaceReason?: string) => {
     const lossyContent = page.content ? findMarkdownLossyContent(page.content) : [];
     if (lossyContent.length > 0) {
-      const inPlaceNote = inPlaceReason === undefined ? '' : ` It couldn't be edited in place because ${inPlaceReason}.`;
+      const inPlaceNote =
+        inPlaceReason === undefined ? '' : ` It couldn't be edited in place because ${inPlaceReason}.`;
       throw new DocmostError(
         `Refused: ${page.title ?? page.id} holds content Markdown cannot carry (${lossyContent.join(', ')}), which rewriting the body would delete.${inPlaceNote} Use append or prepend, or edit it in Docmost.`,
       );
@@ -1195,12 +1245,18 @@ export const createDocmostClient = (config: DocmostConfig) => {
   const parseExpectedUpdatedAt = (expectedUpdatedAt: string | undefined): number | undefined => {
     const expectedTime = expectedUpdatedAt === undefined ? undefined : Date.parse(expectedUpdatedAt);
     if (Number.isNaN(expectedTime)) {
-      throw new DocmostError(`expectedUpdatedAt "${expectedUpdatedAt}" is not a timestamp; pass updatedAt from get_page.`);
+      throw new DocmostError(
+        `expectedUpdatedAt "${expectedUpdatedAt}" is not a timestamp; pass updatedAt from get_page.`,
+      );
     }
     return expectedTime;
   };
 
-  const refuseStaleWrite = (page: EditorPage, expectedUpdatedAt: string | undefined, expectedTime: number | undefined) => {
+  const refuseStaleWrite = (
+    page: EditorPage,
+    expectedUpdatedAt: string | undefined,
+    expectedTime: number | undefined,
+  ) => {
     if (expectedTime !== undefined && Date.parse(page.updatedAt ?? '') !== expectedTime) {
       throw new DocmostError(
         `Page changed at ${page.updatedAt ?? 'an unknown time'} (you read ${expectedUpdatedAt}); re-read it with get_page before replacing.`,
@@ -1224,9 +1280,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
       }
     }
     const contentFields =
-      input.markdown === undefined
-        ? {}
-        : { content: input.markdown, operation: input.operation, format: 'markdown' };
+      input.markdown === undefined ? {} : { content: input.markdown, operation: input.operation, format: 'markdown' };
     return toPage(
       await post(
         '/pages/update',
@@ -1245,7 +1299,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const liveMergeSkipped = 'skipped' in attempt ? { liveMergeSkipped: attempt.skipped } : {};
     try {
       return live === undefined
-        ? { ...(await editSavedPage(editorPage, oldText, newText, input.replaceAll)), liveMerge: false, ...liveMergeSkipped }
+        ? {
+            ...(await editSavedPage(editorPage, oldText, newText, input.replaceAll)),
+            liveMerge: false,
+            ...liveMergeSkipped,
+          }
         : await editLivePage(live, editorPage, oldText, newText, input.replaceAll);
     } finally {
       live?.close();
@@ -1267,7 +1325,10 @@ export const createDocmostClient = (config: DocmostConfig) => {
       throw tooManyMatches(plan.ambiguousMatches);
     }
     if ('reason' in plan) {
-      return { ...(await rewriteFromMarkdown(editorPage, oldText, newText, replaceAll, plan.reason, live)), liveMerge: false };
+      return {
+        ...(await rewriteFromMarkdown(editorPage, oldText, newText, replaceAll, plan.reason, live)),
+        liveMerge: false,
+      };
     }
     try {
       live.transact(() => {
@@ -1390,7 +1451,8 @@ export const createDocmostClient = (config: DocmostConfig) => {
 
   const listComments = async (pageReference: string, includeResolved: boolean) => {
     const comments = await collectAllPages('/comments', { pageId: await resolvePageId(pageReference) }, commentSchema);
-    const byTime = (first: DocmostComment, second: DocmostComment) => Date.parse(first.createdAt) - Date.parse(second.createdAt);
+    const byTime = (first: DocmostComment, second: DocmostComment) =>
+      Date.parse(first.createdAt) - Date.parse(second.createdAt);
     return comments
       .filter((comment) => !comment.parentCommentId && (includeResolved || !comment.resolvedAt))
       .sort(byTime)
@@ -1420,7 +1482,13 @@ export const createDocmostClient = (config: DocmostConfig) => {
       const quote = findQuote(live.document, input.quote);
       const comment = await post(
         '/comments/create',
-        { pageId, content, type: 'inline', selection: quote.text, yjsSelection: live.selection(quote.block, quote.start, quote.end) },
+        {
+          pageId,
+          content,
+          type: 'inline',
+          selection: quote.text,
+          yjsSelection: live.selection(quote.block, quote.start, quote.end),
+        },
         commentSchema,
       );
       const anchored = await live.waitFor((document) => hasCommentMark(document, comment.id), LIVE_CONFIRM_TIMEOUT_MS);
@@ -1440,7 +1508,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const target = await commentInfo(commentId);
     const content = await buildCommentContent(text);
     const threadId = target.parentCommentId ?? target.id;
-    const reply = await post('/comments/create', { pageId: target.pageId, content, parentCommentId: threadId }, commentSchema);
+    const reply = await post(
+      '/comments/create',
+      { pageId: target.pageId, content, parentCommentId: threadId },
+      commentSchema,
+    );
     return { reply, threadId, postedToThread: Boolean(target.parentCommentId) };
   };
 
@@ -1451,7 +1523,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
     return { id: target.id, threadId: target.parentCommentId ?? target.id };
   };
 
-  const removeCommentHighlight = async (comment: DocmostComment): Promise<{ highlightRemoved: boolean; highlightLeft?: string }> => {
+  const removeCommentHighlight = async (
+    comment: DocmostComment,
+  ): Promise<{ highlightRemoved: boolean; highlightLeft?: string }> => {
     let attempt: Awaited<ReturnType<typeof openLive>>;
     try {
       attempt = await openLive(comment.pageId);
@@ -1463,7 +1537,11 @@ export const createDocmostClient = (config: DocmostConfig) => {
     }
     const { live } = attempt;
     try {
-      live.updateMarks('comment', (attrs) => attrs.commentId === comment.id, () => null);
+      live.updateMarks(
+        'comment',
+        (attrs) => attrs.commentId === comment.id,
+        () => null,
+      );
       await live.confirm(LIVE_CONFIRM_TIMEOUT_MS);
       return { highlightRemoved: true };
     } catch (error) {
@@ -1540,7 +1618,10 @@ export const createDocmostClient = (config: DocmostConfig) => {
         return { highlightUpdated: true };
       }
       if (!live.canEdit) {
-        return { highlightUpdated: false, highlightLeft: 'this account can only view the page, so it cannot update the highlight' };
+        return {
+          highlightUpdated: false,
+          highlightLeft: 'this account can only view the page, so it cannot update the highlight',
+        };
       }
       live.updateMarks('comment', isStale, (attrs) => ({ ...attrs, resolved }));
       await live.confirm(LIVE_CONFIRM_TIMEOUT_MS);
@@ -1562,7 +1643,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const page = await getPage(input.pageId);
     const parentPage = input.parentPageId === undefined ? undefined : await getPage(input.parentPageId);
     if (parentPage && input.spaceId && input.spaceId !== parentPage.spaceId) {
-      throw new DocmostError(`Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`);
+      throw new DocmostError(
+        `Parent page ${input.parentPageId} is in space ${parentPage.spaceId}, not ${input.spaceId}.`,
+      );
     }
     const spaceId = parentPage?.spaceId ?? input.spaceId ?? page.spaceId;
     if (spaceId !== page.spaceId) {
@@ -1621,14 +1704,22 @@ export const createDocmostClient = (config: DocmostConfig) => {
     const page = toPage(
       await post(
         '/pages/update',
-        { pageId: currentPage.id, title: revision.title ?? undefined, content: revision.content, operation: 'replace', format: 'json' },
+        {
+          pageId: currentPage.id,
+          title: revision.title ?? undefined,
+          content: revision.content,
+          operation: 'replace',
+          format: 'json',
+        },
         pageSchema,
       ),
     );
     return {
       page,
       revision,
-      commentHighlightsRemoved: new Set(commentIdsIn(currentContent).filter((commentId) => !keptComments.has(commentId))).size,
+      commentHighlightsRemoved: new Set(
+        commentIdsIn(currentContent).filter((commentId) => !keptComments.has(commentId)),
+      ).size,
       ...('skipped' in attempt ? { typingCheckSkipped: attempt.skipped } : {}),
     };
   };
@@ -1643,7 +1734,9 @@ export const createDocmostClient = (config: DocmostConfig) => {
       throw new DocmostError(`${fullPath} is not a file.`);
     }
     if (fileStats.size > MAX_UPLOAD_BYTES) {
-      throw new DocmostError(`${fullPath} is ${(fileStats.size / 1024 / 1024).toFixed(1)} MB; uploads are limited to 50 MB.`);
+      throw new DocmostError(
+        `${fullPath} is ${(fileStats.size / 1024 / 1024).toFixed(1)} MB; uploads are limited to 50 MB.`,
+      );
     }
     return { fullPath, contents: await readFile(fullPath) };
   };

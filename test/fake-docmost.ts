@@ -262,7 +262,10 @@ export const startFakeDocmost = async (
   const hang = () => new Promise<void>((resolve) => hanging.push(resolve));
   const findPage = (reference: unknown) => pages.find((page) => page.id === reference || page.slugId === reference);
 
-  const pageInfo = ({ markdown, json, textPieces: _pieces, history: _history, ...fields }: FakePage, format: unknown) => ({
+  const pageInfo = (
+    { markdown, json, textPieces: _pieces, history: _history, ...fields }: FakePage,
+    format: unknown,
+  ) => ({
     ...fields,
     content: format === 'markdown' ? markdown : json,
   });
@@ -484,7 +487,10 @@ export const startFakeDocmost = async (
         send(response, 403, { message: 'You can only delete your own comments' });
         return;
       }
-      const removed = new Set([comment.id, ...comments.filter((reply) => reply.parentCommentId === comment.id).map((reply) => reply.id)]);
+      const removed = new Set([
+        comment.id,
+        ...comments.filter((reply) => reply.parentCommentId === comment.id).map((reply) => reply.id),
+      ]);
       comments.splice(0, comments.length, ...comments.filter((candidate) => !removed.has(candidate.id)));
       send(response, 200, {});
       return;
@@ -543,7 +549,12 @@ export const startFakeDocmost = async (
     send(response, 200, { data: commentView(comment) });
   };
 
-  const handle = (endpoint: string, body: Record<string, unknown>, token: string | undefined, response: ServerResponse) => {
+  const handle = (
+    endpoint: string,
+    body: Record<string, unknown>,
+    token: string | undefined,
+    response: ServerResponse,
+  ) => {
     if (endpoint === '/auth/login') {
       loginCount += 1;
       if (body.email !== EMAIL || body.password !== PASSWORD) {
@@ -597,7 +608,9 @@ export const startFakeDocmost = async (
     if (endpoint === '/pages/sidebar-pages' && body.pageId === undefined) {
       send(response, 200, {
         data: cursorPage(
-          pages.filter((page) => !page.deletedAt && page.spaceId === body.spaceId && page.parentPageId === null).map(sidebarView),
+          pages
+            .filter((page) => !page.deletedAt && page.spaceId === body.spaceId && page.parentPageId === null)
+            .map(sidebarView),
           body,
           options.sidebarPageSize,
         ),
@@ -619,8 +632,11 @@ export const startFakeDocmost = async (
     }
     if (endpoint === '/search/suggest') {
       const query = typeof body.query === 'string' ? body.query.toLowerCase() : '';
-      const users = body.includeUsers === true ? members.filter((member) => member.name.toLowerCase().includes(query)) : [];
-      send(response, 200, { data: { users: users.slice(0, typeof body.limit === 'number' ? body.limit : 10), pages: [] } });
+      const users =
+        body.includeUsers === true ? members.filter((member) => member.name.toLowerCase().includes(query)) : [];
+      send(response, 200, {
+        data: { users: users.slice(0, typeof body.limit === 'number' ? body.limit : 10), pages: [] },
+      });
       return;
     }
     if (endpoint === '/pages/history/info') {
@@ -676,12 +692,21 @@ export const startFakeDocmost = async (
     }
     if (endpoint === '/pages/history') {
       const revisions = [...(page.history ?? [])].sort((first, second) => byNewest(first.createdAt, second.createdAt));
-      send(response, 200, { data: cursorPage(revisions.map((revision) => revisionView(page, revision)), body) });
+      send(response, 200, {
+        data: cursorPage(
+          revisions.map((revision) => revisionView(page, revision)),
+          body,
+        ),
+      });
       return;
     }
     if (endpoint === '/pages/breadcrumbs') {
       const path: FakePage[] = [];
-      for (let current = findPage(page.id); current !== undefined && !current.deletedAt; current = findPage(current.parentPageId)) {
+      for (
+        let current = findPage(page.id);
+        current !== undefined && !current.deletedAt;
+        current = findPage(current.parentPageId)
+      ) {
         path.unshift(current);
       }
       send(response, 200, {
@@ -862,7 +887,9 @@ export const startFakeDocmost = async (
     page: (reference: string) => findPage(reference),
     comments: () => comments.map((comment) => structuredClone(comment)),
     commentWrites: () =>
-      requests.filter((entry) => ['/comments/create', '/comments/update', '/comments/delete', '/comments/resolve'].includes(entry.endpoint)),
+      requests.filter((entry) =>
+        ['/comments/create', '/comments/update', '/comments/delete', '/comments/resolve'].includes(entry.endpoint),
+      ),
     dropCommentMarks: () => {
       commentMarks = 'drop';
     },

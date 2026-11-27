@@ -34,7 +34,11 @@ test('the same timestamp written with +00:00 counts as unchanged', async (t) => 
 test('a value that is not a timestamp is refused before any request', async (t) => {
   const { docmost, server } = await startHarness(t, [page()]);
 
-  const result = await server.call('update_page', { pageId: 'p1', markdown: 'new body', expectedUpdatedAt: 'yesterday' });
+  const result = await server.call('update_page', {
+    pageId: 'p1',
+    markdown: 'new body',
+    expectedUpdatedAt: 'yesterday',
+  });
   assert.equal(result.isError, true);
   assert.match(result.text, /expectedUpdatedAt "yesterday" is not a timestamp/);
   assert.equal(docmost.requests.length, 0);
@@ -91,8 +95,14 @@ test('append and prepend keep unsaved typing in the live document', async (t) =>
   const editor = await openTestEditor(t, docmost, 'p1');
   await editor.typeParagraph('Typed but not saved.');
 
-  assert.equal((await server.call('update_page', { pageId: 'p1', markdown: 'Appended.', operation: 'append' })).isError, false);
-  assert.equal((await server.call('update_page', { pageId: 'p1', markdown: 'Prepended.', operation: 'prepend' })).isError, false);
+  assert.equal(
+    (await server.call('update_page', { pageId: 'p1', markdown: 'Appended.', operation: 'append' })).isError,
+    false,
+  );
+  assert.equal(
+    (await server.call('update_page', { pageId: 'p1', markdown: 'Prepended.', operation: 'prepend' })).isError,
+    false,
+  );
   const expected = doc(
     paragraph(text('Prepended.')),
     paragraph(text('original body')),

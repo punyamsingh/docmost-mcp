@@ -5,9 +5,16 @@ import { startHarness } from './helpers.ts';
 
 const comment: EditorMark = { type: 'comment', attrs: { commentId: 'comment-1', resolved: false } };
 const mention: EditorNode = { type: 'mention', attrs: { id: 'mention-1', label: 'Test User', entityType: 'user' } };
-const block = (type: string, attrs: Record<string, unknown>, ...content: EditorNode[]): EditorNode => ({ type, attrs, content });
+const block = (type: string, attrs: Record<string, unknown>, ...content: EditorNode[]): EditorNode => ({
+  type,
+  attrs,
+  content,
+});
 
-const richDoc = (sentence = 'The launch is on Monday.', commentedPart: EditorNode[] = [text('Some '), text('commented words', [comment]), text('.')]) =>
+const richDoc = (
+  sentence = 'The launch is on Monday.',
+  commentedPart: EditorNode[] = [text('Some '), text('commented words', [comment]), text('.')],
+) =>
   doc(
     block('paragraph', { id: 'para1', indent: 0 }, text('Written by '), mention),
     block('paragraph', { id: 'para2', indent: 0 }, ...commentedPart),
@@ -25,12 +32,20 @@ const harness = async (t: TestContext, mode: Mode, page: FakePage) => {
   const edit = async (args: Record<string, unknown>) => {
     const result = await server.call('edit_page', { pageId: page.id, ...args });
     docmost.saveLive(page.id);
-    return { isError: result.isError, text: result.text, summary: result.isError ? undefined : JSON.parse(result.text) };
+    return {
+      isError: result.isError,
+      text: result.text,
+      summary: result.isError ? undefined : JSON.parse(result.text),
+    };
   };
   return { docmost, edit, savedJson: () => docmost.page(page.id)?.json };
 };
 
-const checkPath = (mode: Mode, docmost: Awaited<ReturnType<typeof harness>>['docmost'], summary: Record<string, unknown>) => {
+const checkPath = (
+  mode: Mode,
+  docmost: Awaited<ReturnType<typeof harness>>['docmost'],
+  summary: Record<string, unknown>,
+) => {
   assert.equal(summary.editedInPlace, true);
   if (mode === 'live') {
     assert.equal(summary.liveMerge, true);
@@ -84,20 +99,31 @@ for (const mode of MODES) {
   });
 
   test(`[${mode}] escaped characters in oldText and newText match their plain form`, async (t) => {
-    const { edit, savedJson } = await harness(t, mode, makePage({ id: 'p1', json: doc(paragraph(text('3 * 4 = 12'))) }));
+    const { edit, savedJson } = await harness(
+      t,
+      mode,
+      makePage({ id: 'p1', json: doc(paragraph(text('3 * 4 = 12'))) }),
+    );
     await edit({ oldText: '3 \\* 4', newText: '3 \\* 5' });
     assert.deepEqual(savedJson(), doc(paragraph(text('3 * 5 = 12'))));
   });
 
   test(`[${mode}] multi-line text in a code block is matched as written, backslashes included`, async (t) => {
     const code = (body: string) => doc(block('codeBlock', { language: 'js' }, text(body)));
-    const { edit, savedJson } = await harness(t, mode, makePage({ id: 'p1', json: code('const pattern = /\\d+/;\nconst total = a * b;') }));
+    const { edit, savedJson } = await harness(
+      t,
+      mode,
+      makePage({ id: 'p1', json: code('const pattern = /\\d+/;\nconst total = a * b;') }),
+    );
     await edit({ oldText: 'const pattern = /\\d+/;\nconst total', newText: 'const digits = /\\d+/;\nconst sum' });
     assert.deepEqual(savedJson(), code('const digits = /\\d+/;\nconst sum = a * b;'));
   });
 
   test(`[${mode}] deleting a whole text node leaves no empty text node behind`, async (t) => {
-    const page = makePage({ id: 'p1', json: doc(paragraph(text('keep '), text('drop', [{ type: 'bold' }])), paragraph(text('gone'))) });
+    const page = makePage({
+      id: 'p1',
+      json: doc(paragraph(text('keep '), text('drop', [{ type: 'bold' }])), paragraph(text('gone'))),
+    });
     const { edit, savedJson } = await harness(t, mode, page);
     await edit({ oldText: 'drop', newText: '' });
     await edit({ oldText: 'gone', newText: '' });
@@ -107,7 +133,10 @@ for (const mode of MODES) {
   test(`[${mode}] replaceAll edits matches in table cells and list items at once`, async (t) => {
     const page = (word: string) =>
       doc(
-        { type: 'table', content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [paragraph(text(`${word} one`))] }] }] },
+        {
+          type: 'table',
+          content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [paragraph(text(`${word} one`))] }] }],
+        },
         { type: 'bulletList', content: [{ type: 'listItem', content: [paragraph(text(`${word} two`))] }] },
         paragraph(text(`${word} three`)),
       );
@@ -124,7 +153,11 @@ for (const mode of MODES) {
     const { edit, savedJson } = await harness(
       t,
       mode,
-      makePage({ id: 'p1', markdown: 'mirror of example.com/docs\n\n[read this](https://example.com/docs)', json: page('mirror of example.com/docs') }),
+      makePage({
+        id: 'p1',
+        markdown: 'mirror of example.com/docs\n\n[read this](https://example.com/docs)',
+        json: page('mirror of example.com/docs'),
+      }),
     );
     const { isError } = await edit({ oldText: 'example.com/docs', newText: 'example.org/docs' });
     assert.equal(isError, false);
