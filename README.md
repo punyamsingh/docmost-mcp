@@ -57,7 +57,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `reply_to_comment` | Replies in a comment's thread |
 | `edit_comment` | Replaces the text of one of the account's own comments |
 | `delete_comment` | Permanently deletes a comment and removes its highlight; a whole thread needs `deleteReplies` |
-| `resolve_comment` | Resolves or reopens a thread, on Docmost instances licensed for it |
+| `resolve_comment` | Resolves or reopens a thread; before Docmost 0.98 this needs an Enterprise licence |
 | `upload_attachment` | Uploads a local image or file (up to 50 MB) to a page and returns a Markdown image or link to place with `edit_page` or `update_page` |
 | `export_page` | Saves a page as a Markdown or HTML file, or as a `.zip` with its subpages or attachments, and returns the path and size |
 | `export_space` | Saves a whole space as a `.zip` of Markdown or HTML files; needs space admin rights |
@@ -87,7 +87,7 @@ Comment text is plain text: blank lines start new paragraphs, and `@[Full Name]`
 
 An inline comment's `quote` must appear exactly once inside one paragraph or heading, without crossing a mention or sitting in a code block or on text that already has a comment. The server finds it in the page's live document and sends its position with the comment, and Docmost adds the highlight, as it does in its own editor. The server then waits up to 5 seconds for the highlight; if it doesn't appear, the comment still exists and the result says `anchored: false`.
 
-Docmost threads are one level deep, so a reply to a reply is posted in the same thread, and only a thread's top comment can be resolved. Resolving is a Docmost Enterprise feature in some releases; without the licence the call is refused and nothing changes. Docmost 0.95 leaves an inline thread's highlight looking open after a resolve, so the server updates it through the live document; `highlightUpdated` says whether it could. Deletes are permanent and take a comment's replies with them, so deleting a thread's top comment needs `deleteReplies: true`. Docmost's API leaves a deleted comment's highlight on the page, so the server removes it through the live document; if it can't, for an account that can only comment, the result says `highlightRemoved: false`.
+Docmost threads are one level deep, so a reply to a reply is posted in the same thread, and only a thread's top comment can be resolved. Docmost 0.98 and newer let any member resolve threads; older releases keep it for Enterprise licences, and without one the call is refused and nothing changes. Docmost 0.95 leaves an inline thread's highlight looking open after a resolve, so the server updates it through the live document; `highlightUpdated` says whether it could. Deletes are permanent and take a comment's replies with them, so deleting a thread's top comment needs `deleteReplies: true`. Docmost's API leaves a deleted comment's highlight on the page, so the server removes it through the live document; if it can't, for an account that can only comment, the result says `highlightRemoved: false`.
 
 ## Requirements
 

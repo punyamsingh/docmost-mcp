@@ -1819,7 +1819,7 @@ export const createDocmostClient = (config: DocmostConfig) => {
     } catch (error) {
       if (error instanceof DocmostError && error.status === 403 && /licen[cs]e/i.test(error.message)) {
         throw new DocmostError(
-          `Refused: resolving comment threads needs a Docmost Enterprise licence on this instance, so the thread stays ${resolved ? 'open' : 'resolved'}. Nothing changed.`,
+          `Refused: this Docmost only resolves comment threads with an Enterprise licence (Docmost 0.98 and newer don't need one), so the thread stays ${resolved ? 'open' : 'resolved'}. Nothing changed.`,
         );
       }
       throw error;

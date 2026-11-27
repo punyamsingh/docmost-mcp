@@ -1,6 +1,6 @@
 {
   "name": "@punyamsingh/docmost-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "mcpName": "io.github.punyamsingh/docmost-mcp",
   "description": "MCP server for self-hosted Docmost: let Claude, Cursor and other AI agents read, search, create and edit wiki pages in Markdown. No Enterprise API key needed.",
   "type": "module",
