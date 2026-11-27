@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { makePage, SPACE_ID } from './fake-docmost.ts';
+import { ACCOUNT, commentMark, doc, makePage, paragraph, SPACE_ID, START_TIME, text } from './fake-docmost.ts';
 import { startHarness } from './helpers.ts';
 
 const OTHER_SPACE_ID = 'space-2';
@@ -159,4 +159,107 @@ test('restore_page refuses a page that is not in the trash', async (t) => {
   assert.equal(result.isError, true);
   assert.equal(result.text, 'Page p1 is not in the trash.');
   assert.deepEqual(pageMoveRequests(docmost.requests), []);
+});
+
+test('list_trash lists the top deleted page of each deleted subtree, newest first, with who deleted it', async (t) => {
+  const { docmost, server } = await startHarness(t, [
+    makePage({ id: 'old', deletedAt: '2026-11-24T10:00:00.000Z' }),
+    makePage({ id: 'p1', deletedAt: '2026-11-26T10:00:00.000Z' }),
+    makePage({ id: 'c1', parentPageId: 'p1', deletedAt: '2026-11-26T10:00:00.000Z' }),
+    makePage({ id: 'live' }),
+    makePage({ id: 'elsewhere', spaceId: OTHER_SPACE_ID, deletedAt: '2026-11-26T11:00:00.000Z' }),
+  ]);
+
+  const result = await server.call('list_trash', { spaceId: SPACE_ID });
+  assert.equal(result.isError, false, result.text);
+  assert.deepEqual(JSON.parse(result.text), {
+    pages: [
+      { id: 'p1', slugId: 'Sp1', title: 'Page p1', parentPageId: null, deletedAt: '2026-11-26T10:00:00.000Z', deletedBy: ACCOUNT.name, url: `${docmost.url}/p/Sp1` },
+      { id: 'old', slugId: 'Sold', title: 'Page old', parentPageId: null, deletedAt: '2026-11-24T10:00:00.000Z', deletedBy: ACCOUNT.name, url: `${docmost.url}/p/Sold` },
+    ],
+    nextCursor: null,
+  });
+});
+
+test("list_trash reports Docmost's refusal for an account that can only view the space", async (t) => {
+  const { docmost, server } = await startHarness(t, [makePage({ id: 'p1', deletedAt: START_TIME })]);
+  docmost.makeSpaceViewer();
+
+  const result = await server.call('list_trash', { spaceId: SPACE_ID });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /\/pages\/trash failed \(403\)/);
+});
+
+test('duplicate_page copies a page and its subpages next to the original as "Copy of" its title', async (t) => {
+  const { docmost, server } = await startHarness(t, [
+    makePage({ id: 'p1', title: 'Runbook' }),
+    makePage({ id: 'c1', parentPageId: 'p1' }),
+    makePage({ id: 'trashedChild', parentPageId: 'p1', deletedAt: START_TIME }),
+  ]);
+
+  const result = await server.call('duplicate_page', { pageId: `${docmost.url}/p/runbook-Sp1` });
+  assert.equal(result.isError, false, result.text);
+  const copy = JSON.parse(result.text);
+  assert.equal(copy.title, 'Copy of Runbook');
+  assert.equal(copy.spaceId, SPACE_ID);
+  assert.equal(copy.parentPageId, null);
+  assert.equal(copy.subpagesCopied, 1);
+  assert.equal(copy.moveFailed, undefined);
+  assert.deepEqual(docmost.requests.filter((entry) => entry.endpoint === '/pages/duplicate').map((entry) => entry.body), [{ pageId: 'p1' }]);
+  assert.equal(docmost.page('c1')?.parentPageId, 'p1');
+  assert.ok(docmost.page('c1-copy4'), 'the subpage is copied once, the trashed one not at all');
+  assert.equal(docmost.page('c1-copy4')?.parentPageId, copy.id);
+  assert.equal(docmost.page('trashedChild-copy4'), undefined);
+});
+
+test('duplicate_page copies into another space and under the given page there', async (t) => {
+  const { docmost, server } = await startHarness(t, [
+    makePage({ id: 'p1', title: 'Runbook' }),
+    makePage({ id: 'q1', spaceId: OTHER_SPACE_ID }),
+  ]);
+
+  const result = await server.call('duplicate_page', { pageId: 'p1', parentPageId: 'q1' });
+  assert.equal(result.isError, false, result.text);
+  const copy = JSON.parse(result.text);
+  assert.equal(copy.title, 'Runbook');
+  assert.equal(copy.spaceId, OTHER_SPACE_ID);
+  assert.equal(copy.parentPageId, 'q1');
+  assert.deepEqual(
+    docmost.requests.filter((entry) => /^\/pages\/(duplicate|move)/.test(entry.endpoint)).map((entry) => entry.endpoint),
+    ['/pages/duplicate', '/pages/move'],
+  );
+  assert.equal(docmost.requests.find((entry) => entry.endpoint === '/pages/duplicate')?.body.spaceId, OTHER_SPACE_ID);
+});
+
+test('duplicate_page leaves comment highlights behind, as Docmost does', async (t) => {
+  const { docmost, server } = await startHarness(t, [
+    makePage({ id: 'p1', json: doc(paragraph(text('Ship '), text('on Monday', [commentMark('c1')]))) }),
+  ]);
+
+  const copy = JSON.parse((await server.call('duplicate_page', { pageId: 'p1' })).text);
+  assert.deepEqual(docmost.page(copy.id)?.json, doc(paragraph(text('Ship '), text('on Monday'))));
+  assert.deepEqual(docmost.page('p1')?.json, doc(paragraph(text('Ship '), text('on Monday', [commentMark('c1')]))));
+});
+
+test('duplicate_page reports a copy it made but could not move under the parent', async (t) => {
+  const { docmost, server } = await startHarness(t, [
+    makePage({ id: 'p1' }),
+    makePage({ id: 'trashed', title: 'Old parent', deletedAt: START_TIME }),
+  ]);
+
+  const result = await server.call('duplicate_page', { pageId: 'p1', parentPageId: 'trashed' });
+  assert.equal(result.isError, false, result.text);
+  const copy = JSON.parse(result.text);
+  assert.equal(copy.parentPageId, null);
+  assert.match(copy.moveFailed, /^The copy was made but not moved under Old parent: .*Parent page not found/);
+  assert.ok(docmost.page(copy.id));
+});
+
+test('duplicate_page refuses a parent outside the given space before copying', async (t) => {
+  const { docmost, server } = await startHarness(t, [makePage({ id: 'p1' }), makePage({ id: 'q1', spaceId: OTHER_SPACE_ID })]);
+
+  const result = await server.call('duplicate_page', { pageId: 'p1', parentPageId: 'q1', spaceId: SPACE_ID });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /Parent page q1 is in space space-2, not space-1/);
+  assert.equal(docmost.requests.some((entry) => entry.endpoint === '/pages/duplicate'), false);
 });

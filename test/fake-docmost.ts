@@ -244,6 +244,7 @@ export const startFakeDocmost = async (
   const members = [ACCOUNT, ...(options.members ?? [])];
   let commentMarks: 'apply' | 'drop' = 'apply';
   let spaceAdmin = false;
+  let spaceViewer = false;
   let resolveMode: 'updatesHighlight' | 'leavesHighlight' | 'unlicensed' = 'updatesHighlight';
   const requests: FakeRequest[] = [];
   const uploads: FakeUpload[] = [];
@@ -271,6 +272,34 @@ export const startFakeDocmost = async (
     root,
     ...pages.filter((page) => page.parentPageId === root.id).flatMap(subtree),
   ];
+
+  const withoutCommentMarks = (node: EditorNode): EditorNode => {
+    const marks = node.marks?.filter((mark) => mark.type !== 'comment');
+    const { marks: _marks, content, ...rest } = node;
+    return {
+      ...rest,
+      ...(marks !== undefined && marks.length > 0 ? { marks } : {}),
+      ...(content !== undefined ? { content: content.map(withoutCommentMarks) } : {}),
+    };
+  };
+
+  const duplicate = (root: FakePage, targetSpaceId: string) => {
+    const sameSpace = targetSpaceId === root.spaceId;
+    const originals = subtree(root).filter((page) => !page.deletedAt);
+    const newIds = new Map(originals.map((page) => [page.id, `${page.id}-copy${pages.length + 1}`]));
+    const copies = originals.map((page) => ({
+      ...structuredClone(page),
+      id: newIds.get(page.id) ?? page.id,
+      slugId: `S${newIds.get(page.id) ?? page.id}`,
+      title: sameSpace && page === root ? `Copy of ${page.title}` : page.title,
+      spaceId: targetSpaceId,
+      parentPageId: page === root ? (sameSpace ? root.parentPageId : null) : (newIds.get(page.parentPageId ?? '') ?? null),
+      json: page.json === null ? null : withoutCommentMarks(page.json),
+      history: [],
+    }));
+    pages.splice(sameSpace ? pages.indexOf(root) + 1 : pages.length, 0, ...copies);
+    return copies;
+  };
 
   const cursorPage = <Item>(items: Item[], body: Record<string, unknown>, fixedLimit?: number) => {
     const limit = fixedLimit ?? (typeof body.limit === 'number' ? body.limit : 20);
@@ -633,6 +662,23 @@ export const startFakeDocmost = async (
       send(response, 200, { data: { ...revisionView(owner, revision), content: revision.content } });
       return;
     }
+    if (endpoint === '/pages/trash') {
+      if (spaceViewer) {
+        send(response, 403, { message: 'Forbidden' });
+        return;
+      }
+      const trashed = pages
+        .filter((page) => page.deletedAt && page.spaceId === body.spaceId && !findPage(page.parentPageId)?.deletedAt)
+        .sort((first, second) => byNewest(first.deletedAt ?? '', second.deletedAt ?? ''))
+        .map(({ markdown: _markdown, json, textPieces: _pieces, history: _history, ...fields }) => ({
+          ...fields,
+          content: json,
+          deletedBy: ACCOUNT,
+          space: spaces.find((space) => space.id === fields.spaceId) ?? null,
+        }));
+      send(response, 200, { data: cursorPage(trashed, body) });
+      return;
+    }
     if (endpoint === '/pages/recent') {
       const recent = pages
         .filter((page) => !page.deletedAt && (body.spaceId === undefined || page.spaceId === body.spaceId))
@@ -718,6 +764,20 @@ export const startFakeDocmost = async (
       page.parentPageId = parent?.id ?? null;
       page.position = position;
       send(response, 200, { success: true, status: 200 });
+      return;
+    }
+    if (endpoint === '/pages/duplicate') {
+      if (spaceViewer) {
+        send(response, 403, { message: 'Forbidden' });
+        return;
+      }
+      const [copy, ...subpages] = duplicate(page, typeof body.spaceId === 'string' ? body.spaceId : page.spaceId);
+      if (copy === undefined) {
+        send(response, 404, { message: 'Page to copy not found' });
+        return;
+      }
+      const { content: _content, ...copyInfo } = pageInfo(copy, undefined);
+      send(response, 200, { data: { ...copyInfo, hasChildren: subpages.length > 0, childPageIds: subpages.map((subpage) => subpage.id) } });
       return;
     }
     if (endpoint === '/pages/move-to-space') {
@@ -868,6 +928,9 @@ export const startFakeDocmost = async (
     },
     makeSpaceAdmin: () => {
       spaceAdmin = true;
+    },
+    makeSpaceViewer: () => {
+      spaceViewer = true;
     },
     setResolveMode: (mode: 'updatesHighlight' | 'leavesHighlight' | 'unlicensed') => {
       resolveMode = mode;
