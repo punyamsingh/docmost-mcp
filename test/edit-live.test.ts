@@ -24,7 +24,11 @@ test('typing someone has not saved yet survives an edit elsewhere on the page', 
   assert.equal(summary.liveMerge, true);
   assert.deepEqual(docmost.writes(), []);
 
-  const expected = doc(paragraph(text('Intro line.')), paragraph(text('The launch is on Tuesday.')), paragraph(text('Typed but not saved.')));
+  const expected = doc(
+    paragraph(text('Intro line.')),
+    paragraph(text('The launch is on Tuesday.')),
+    paragraph(text('Typed but not saved.')),
+  );
   assert.deepEqual(docmost.liveJson('p1'), expected);
   docmost.saveLive('p1');
   assert.deepEqual(docmost.page('p1')?.json, expected);
@@ -36,7 +40,10 @@ test('typing in the same paragraph, before the match, is kept along with the edi
   await editor.typeInto(1, 0, 'Note: ');
 
   summaryOf(await server.call('edit_page', { pageId: 'p1', oldText: 'Monday', newText: 'Tuesday' }));
-  assert.deepEqual(docmost.liveJson('p1'), doc(paragraph(text('Intro line.')), paragraph(text('Note: The launch is on Tuesday.'))));
+  assert.deepEqual(
+    docmost.liveJson('p1'),
+    doc(paragraph(text('Intro line.')), paragraph(text('Note: The launch is on Tuesday.'))),
+  );
 });
 
 test('text that exists only in unsaved typing can be edited', async (t) => {
@@ -50,7 +57,11 @@ test('text that exists only in unsaved typing can be edited', async (t) => {
 });
 
 test('a match across two text pieces in one paragraph is edited in place', async (t) => {
-  const twoPieces = makePage({ id: 'p1', textPieces: 'node', json: doc(paragraph(text('alpha '), text('beta'), text(' end'))) });
+  const twoPieces = makePage({
+    id: 'p1',
+    textPieces: 'node',
+    json: doc(paragraph(text('alpha '), text('beta'), text(' end'))),
+  });
   const { docmost, server } = await startHarness(t, [twoPieces]);
 
   summaryOf(await server.call('edit_page', { pageId: 'p1', oldText: 'alpha beta', newText: 'gamma' }));
@@ -96,7 +107,10 @@ for (const [label, mode] of fallbackCases) {
     assert.ok(Date.now() - started < 5000, `fell back after ${Date.now() - started} ms, not straight away`);
     assert.equal(summary.liveMerge, false);
     assert.match(summary.liveMergeSkipped, /live-editing connection (closed|could not be opened)/);
-    assert.deepEqual(docmost.writes().map((write) => write.body.format), ['json']);
+    assert.deepEqual(
+      docmost.writes().map((write) => write.body.format),
+      ['json'],
+    );
     assert.ok(docmost.upgradePaths.length <= 1, `${docmost.upgradePaths.length} connection attempts`);
   });
 }

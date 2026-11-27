@@ -13,7 +13,11 @@ test('list_pages returns root pages with updatedAt, and the children of a page',
 
   const roots = JSON.parse((await server.call('list_pages', { spaceId: SPACE_ID })).text);
   assert.deepEqual(
-    roots.map((page: { id: string; hasChildren: boolean; updatedAt: string }) => [page.id, page.hasChildren, page.updatedAt]),
+    roots.map((page: { id: string; hasChildren: boolean; updatedAt: string }) => [
+      page.id,
+      page.hasChildren,
+      page.updatedAt,
+    ]),
     [['root', true, '2026-11-20T08:00:00.000Z']],
   );
 
@@ -54,7 +58,11 @@ test('list_pages never returns more than the cap, even from a batch larger than 
 });
 
 test('list_spaces lists every space, and says when it stopped at the item cap', async (t) => {
-  const spaces = Array.from({ length: 1001 }, (_, index) => ({ id: `s${index}`, name: `Space ${index}`, slug: `s${index}` }));
+  const spaces = Array.from({ length: 1001 }, (_, index) => ({
+    id: `s${index}`,
+    name: `Space ${index}`,
+    slug: `s${index}`,
+  }));
   const { server } = await startHarness(t, [], { spaces });
 
   const result = await server.call('list_spaces');

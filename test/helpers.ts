@@ -13,16 +13,7 @@ import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 import { z } from 'zod';
-import {
-  EMAIL,
-  PASSWORD,
-  startFakeDocmost,
-  type FakeComment,
-  type FakeDocmost,
-  type FakeMember,
-  type FakePage,
-  type FakeSpace,
-} from './fake-docmost.ts';
+import { EMAIL, PASSWORD, startFakeDocmost, type FakeDocmost, type FakePage } from './fake-docmost.ts';
 
 const SERVER_ENTRY = fileURLToPath(new URL('../build/index.js', import.meta.url));
 
@@ -55,14 +46,15 @@ export const startServer = async (
   return { client, call, cacheHome, close: () => client.close() };
 };
 
-export const runHttpServer = (
-  t: TestContext,
-  docmostUrl: string,
-  args: string[],
-  env: Record<string, string> = {},
-) => {
+export const runHttpServer = (t: TestContext, docmostUrl: string, args: string[], env: Record<string, string> = {}) => {
   const child = spawn(process.execPath, [SERVER_ENTRY, ...args], {
-    env: { PATH: process.env.PATH ?? '', DOCMOST_URL: docmostUrl, DOCMOST_EMAIL: EMAIL, DOCMOST_PASSWORD: PASSWORD, ...env },
+    env: {
+      PATH: process.env.PATH ?? '',
+      DOCMOST_URL: docmostUrl,
+      DOCMOST_EMAIL: EMAIL,
+      DOCMOST_PASSWORD: PASSWORD,
+      ...env,
+    },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   t.after(() => child.kill());
@@ -155,7 +147,8 @@ export const openTestEditor = async (t: TestContext, docmost: FakeDocmost, pageI
     },
     typeInto: async (blockIndex: number, offset: number, value: string) => {
       const element = fragment.get(blockIndex);
-      const run = element instanceof Y.XmlElement ? element.toArray().find((child) => child instanceof Y.XmlText) : undefined;
+      const run =
+        element instanceof Y.XmlElement ? element.toArray().find((child) => child instanceof Y.XmlText) : undefined;
       if (!(run instanceof Y.XmlText)) {
         throw new Error(`Block ${blockIndex} has no text to type into.`);
       }

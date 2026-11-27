@@ -15,14 +15,20 @@ const mention: EditorNode = { type: 'mention', attrs: { id: 'mention-1', label: 
 const commented = text('commented words', [{ type: 'comment', attrs: { commentId: 'comment-1', resolved: false } }]);
 
 test('text that is not on the page is refused and nothing is written', async (t) => {
-  const { result, written } = await editPage(t, makePage({ id: 'p1', markdown: 'alpha' }), { oldText: 'missing', newText: 'x' });
+  const { result, written } = await editPage(t, makePage({ id: 'p1', markdown: 'alpha' }), {
+    oldText: 'missing',
+    newText: 'x',
+  });
   assert.equal(result.isError, true);
   assert.match(result.text, /oldText not found in Page p1; re-read the page with get_page/);
   assert.deepEqual(written, []);
 });
 
 test('text found 3 times is refused without replaceAll', async (t) => {
-  const { result, written } = await editPage(t, makePage({ id: 'p1', markdown: 'x and x and x' }), { oldText: 'x', newText: 'y' });
+  const { result, written } = await editPage(t, makePage({ id: 'p1', markdown: 'x and x and x' }), {
+    oldText: 'x',
+    newText: 'y',
+  });
   assert.equal(result.isError, true);
   assert.match(result.text, /oldText appears 3 times; include more surrounding text or set replaceAll/);
   assert.deepEqual(written, []);
@@ -47,7 +53,10 @@ test('Windows line endings in oldText and newText match the page', async (t) => 
 
 test('a table with a header row keeps a single header row when the body is rewritten', async (t) => {
   const exported = '|  |  |\n| --- | --- |\n| a | b |\n| 1 | 2 |\n\nanchor';
-  const { written } = await editPage(t, makePage({ id: 'p1', markdown: exported }), { oldText: 'anchor', newText: '**ANCHOR**' });
+  const { written } = await editPage(t, makePage({ id: 'p1', markdown: exported }), {
+    oldText: 'anchor',
+    newText: '**ANCHOR**',
+  });
   assert.deepEqual(written, [markdownWrite('| a | b |\n| --- | --- |\n| 1 | 2 |\n\n**ANCHOR**')]);
 });
 
@@ -59,7 +68,10 @@ const richPage = () =>
   });
 
 test('oldText that crosses a mention is refused on a page with a comment, naming the mention', async (t) => {
-  const { result, written } = await editPage(t, richPage(), { oldText: 'Written by @Test User', newText: 'By @Test User' });
+  const { result, written } = await editPage(t, richPage(), {
+    oldText: 'Written by @Test User',
+    newText: 'By @Test User',
+  });
   assert.equal(result.isError, true);
   assert.match(result.text, /cannot carry \(mention, comment\)/);
   assert.match(result.text, /It couldn't be edited in place because oldText crosses a mention\./);
@@ -94,14 +106,22 @@ test('with replaceAll, one match crossing a mention sends the whole edit to the 
       paragraph(text('ping '), mention, text(' soon')),
     ),
   });
-  const { result, written } = await editPage(t, page, { oldText: 'ping @Test User', newText: 'ask @Test User', replaceAll: true });
+  const { result, written } = await editPage(t, page, {
+    oldText: 'ping @Test User',
+    newText: 'ask @Test User',
+    replaceAll: true,
+  });
   assert.equal(result.isError, true);
   assert.match(result.text, /cannot carry \(mention\).*because oldText crosses a mention/);
   assert.deepEqual(written, []);
 });
 
 test('a newText that starts a block with Markdown syntax rewrites the body instead of writing it literally', async (t) => {
-  const page = makePage({ id: 'p1', markdown: 'anchor\n\nbody', json: doc(paragraph(text('anchor')), paragraph(text('body'))) });
+  const page = makePage({
+    id: 'p1',
+    markdown: 'anchor\n\nbody',
+    json: doc(paragraph(text('anchor')), paragraph(text('body'))),
+  });
   const { result, written } = await editPage(t, page, { oldText: 'anchor', newText: '# Heading' });
   assert.equal(JSON.parse(result.text).editedInPlace, false);
   assert.deepEqual(written, [markdownWrite('# Heading\n\nbody')]);
