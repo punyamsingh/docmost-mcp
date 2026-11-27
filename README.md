@@ -35,6 +35,7 @@ Docmost's official MCP server and API keys are part of its paid Enterprise editi
 | `get_page` | Returns a page as Markdown, 500 lines at a time by default, with its id, space, parent, URL and `updatedAt` |
 | `list_page_history` | Lists a page's saved revisions, newest first, with author, contributors and time |
 | `get_page_revision` | Returns one saved revision as Markdown, 500 lines at a time by default |
+| `restore_page_revision` | Puts a saved revision back as the page's body and title, diagrams, mentions and formatting included |
 | `list_recent_pages` | Lists recently updated pages across the account's spaces, or within one space |
 | `get_page_breadcrumbs` | Returns the path from the space root down to a page |
 | `create_page` | Creates a page from Markdown, at a space root or under a parent page |
@@ -62,6 +63,8 @@ When `oldText` and `newText` are plain text and each match sits inside one parag
 Otherwise, for example when the new text has Markdown formatting or the match crosses a line break or a mention, the edit rewrites the whole body from Markdown, as an `update_page` replace does. Content that Markdown cannot carry would be deleted, so the server refuses such a rewrite on any page that holds it: mentions, comments, highlights, coloured or underlined text, drawio and excalidraw diagrams, embeds, attachments, merged table cells, and any block type it does not recognise. Append and prepend only add blocks, so they still work on those pages.
 
 A whole-body rewrite can't be merged, so it is refused while someone with the page open has typing that Docmost hasn't saved yet; retry a minute later. Append and prepend are merged by Docmost, so they always go through.
+
+`restore_page_revision` undoes changes by putting a revision from `list_page_history` back, the way Docmost's own Restore button does. It sends the revision in Docmost's editor format rather than Markdown, so nothing is lost, and takes `expectedUpdatedAt` like a replace. Like a rewrite, it is refused while someone has unsaved typing open, and on a page in the trash. Comments added since the revision keep their thread but lose their highlight in the text; the result's `commentHighlightsRemoved` says how many.
 
 ### Comments
 
